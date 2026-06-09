@@ -17,6 +17,9 @@ class AgentOrchestrator:
         self.context_builder_name = os.getenv(
             "CONTEXT_BUILDER_AGENT_NAME", "oceo-context-builder"
         )
+        self.customer_data_name = os.getenv(
+            "CUSTOMER_DATA_AGENT_NAME", "oceo-customerdata"
+        )
         self.insights_name = os.getenv("INSIGHTS_AGENT_NAME", "oceo-insights")
         self.client = None  # kept for health check compatibility
         self.credential = None
@@ -49,6 +52,7 @@ class AgentOrchestrator:
         if not self.client:
             return
         print(f"  ✓ Agent configured: {self.context_builder_name}")
+        print(f"  ✓ Agent configured: {self.customer_data_name}")
         print(f"  ✓ Agent configured: {self.insights_name}")
 
     def _invoke_agent_streaming(self, agent_name: str, user_input: str):
@@ -231,13 +235,59 @@ class AgentOrchestrator:
             yield {"type": "token", "agent": "context-builder", "content": f"⚠️ Could not gather context: {str(e)}"}
             yield {"type": "agent_completed", "agent": "context-builder", "content": f"Error: {str(e)}", "usage": TokenUsage().model_dump()}
 
-        # Phase 2: Insights — summarizes the JSON into executive briefing
-        # Pass the raw JSON context directly; the insights agent will summarize it
+        # Phase 2: Customer Data — gathers additional customer data
+        yield {"type": "agent_started", "agent": "customer-data"}
+        yield {
+            "type": "token",
+            "agent": "customer-data",
+            "content": "📊 Gathering additional customer data and metrics...\n",
+        }
+
+        customer_data_content = ""
+        try:
+            loop = asyncio.get_event_loop()
+            customer_data_content, cd_usage, cd_sources = await loop.run_in_executor(
+                None, self._collect_agent_response, self.customer_data_name, query
+            )
+
+            # Show brief summary
+            cd_preview = customer_data_content[:300] + "..." if len(customer_data_content) > 300 else customer_data_content
+            yield {"type": "token", "agent": "customer-data", "content": f"✅ Customer data collected ({len(customer_data_content)} chars)\n"}
+
+            if cd_sources:
+                sources_section = "\n---\n### 📚 Data Sources\n"
+                for s in cd_sources:
+                    sources_section += f"- {s}\n"
+                yield {"type": "token", "agent": "customer-data", "content": sources_section}
+
+            yield {
+                "type": "agent_completed",
+                "agent": "customer-data",
+                "content": f"Customer data collected successfully.",
+                "usage": cd_usage.model_dump(),
+            }
+        except Exception as e:
+            yield {"type": "token", "agent": "customer-data", "content": f"⚠️ Could not gather customer data: {str(e)}"}
+            yield {"type": "agent_completed", "agent": "customer-data", "content": f"Error: {str(e)}", "usage": TokenUsage().model_dump()}
+
+        # Phase 3: Insights — combines context + customer data into executive briefing
+        # Pass both data sources; request bullet points and tables
         insights_input = (
-            f"Here is the structured customer context data (JSON) from our research:\n\n"
+            f"You are preparing an executive briefing for the CEO's Chief of Staff.\n\n"
+            f"## Source 1: Context Builder Data\n"
             f"{context_content}\n\n"
-            f"Original user request: {query}\n\n"
-            f"Please summarize this into an executive briefing."
+            f"## Source 2: Customer Data\n"
+            f"{customer_data_content}\n\n"
+            f"## Original Request\n"
+            f"{query}\n\n"
+            f"## Output Format Requirements\n"
+            f"Please synthesize both data sources into a comprehensive executive briefing with:\n"
+            f"1. **Executive Summary** — 3-5 bullet points of the most critical findings\n"
+            f"2. **Key Metrics Table** — A markdown table with columns: Metric | Value | Trend | Risk Level\n"
+            f"3. **Strategic Talking Points** — Bullet points the CEO should raise in the meeting\n"
+            f"4. **Risk & Opportunity Matrix** — A table with: Item | Type (Risk/Opportunity) | Severity | Recommended Action\n"
+            f"5. **Recommended Next Steps** — Prioritized bullet list of actions\n\n"
+            f"Use markdown formatting with headers, bullet points, bold text, and tables throughout."
         )
         async for event in self.run_agent(
             self.insights_name, "insights", insights_input
