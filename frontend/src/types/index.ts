@@ -39,7 +39,7 @@ export interface SessionSummary {
 }
 
 export interface StreamEvent {
-  type: 'agent_started' | 'token' | 'agent_completed' | 'error' | 'done' | 'context_graph';
+  type: 'agent_started' | 'token' | 'agent_completed' | 'error' | 'done' | 'context_graph' | 'watermelon_data' | 'scorecard_data';
   agent?: string;
   content?: string;
   message_id?: string;

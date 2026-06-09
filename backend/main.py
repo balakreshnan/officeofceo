@@ -272,6 +272,18 @@ async def stream_chat(req: SendMessageRequest):
                     )
                     yield f"data: {sse_data}\n\n"
 
+                elif event_type == "watermelon_data":
+                    sse_data = json.dumps(
+                        {"type": "watermelon_data", "data": event.get("data")}
+                    )
+                    yield f"data: {sse_data}\n\n"
+
+                elif event_type == "scorecard_data":
+                    sse_data = json.dumps(
+                        {"type": "scorecard_data", "data": event.get("data")}
+                    )
+                    yield f"data: {sse_data}\n\n"
+
                 elif event_type == "done":
                     sse_data = json.dumps(
                         {

@@ -34,6 +34,8 @@ function App() {
   const [activeTab, setActiveTab] = useState<'chat' | 'graph' | 'watermelon' | 'scorecard'>('chat');
   const [graphData, setGraphData] = useState<GraphData | null>(null);
   const [watermelonRevealed, setWatermelonRevealed] = useState(false);
+  const [watermelonData, setWatermelonData] = useState<any>(null);
+  const [scorecardData, setScorecardData] = useState<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const graphContainerRef = useRef<HTMLDivElement>(null);
@@ -224,6 +226,19 @@ function App() {
           setGraphData(event.data);
         }
         break;
+
+      case 'watermelon_data':
+        if (event.data) {
+          setWatermelonData(event.data);
+          setWatermelonRevealed(false);
+        }
+        break;
+
+      case 'scorecard_data':
+        if (event.data) {
+          setScorecardData(event.data);
+        }
+        break;
     }
   }
 
@@ -356,154 +371,146 @@ function App() {
           <div className="scorecard-container">
             <div className="scorecard-header">
               <h2>📊 Executive Account Scorecard</h2>
-              <p className="scorecard-subtitle">Side-by-side account health comparison — scalable across the portfolio</p>
+              <p className="scorecard-subtitle">Account health at a glance — populated from agent intelligence</p>
             </div>
 
-            <div className="scorecard-comparison">
-              {/* Helios Energy Group */}
-              <div className="sc-card">
-                <div className="sc-card-header">
-                  <div className="sc-account-name">Helios Energy Group</div>
-                  <div className="sc-tier diamond">Diamond</div>
-                </div>
-                <div className="sc-health-bar">
-                  <div className="sc-health-indicator amber" style={{ width: '52%' }}></div>
-                </div>
-                <div className="sc-health-label">Overall Health: <span className="amber">At Risk (52)</span></div>
-
-                <div className="sc-metrics">
-                  <div className="sc-metric-block">
-                    <div className="sc-metric-title">Revenue</div>
-                    <div className="sc-metric-big green">$48.2M</div>
-                    <div className="sc-metric-delta green">↑ 8.1% YoY</div>
-                  </div>
-                  <div className="sc-metric-block">
-                    <div className="sc-metric-title">Pipeline</div>
-                    <div className="sc-metric-big">$12.6M</div>
-                    <div className="sc-metric-delta">4 active deals</div>
-                  </div>
-                  <div className="sc-metric-block">
-                    <div className="sc-metric-title">ACR (Monthly)</div>
-                    <div className="sc-metric-big green">$3.8M</div>
-                    <div className="sc-metric-delta green">↑ 12.4% MoM</div>
-                  </div>
-                  <div className="sc-metric-block">
-                    <div className="sc-metric-title">CSAT</div>
-                    <div className="sc-metric-big green">4.2/5</div>
-                    <div className="sc-metric-delta amber">↓ 0.3 from Q1</div>
-                  </div>
-                </div>
-
-                <div className="sc-section">
-                  <div className="sc-section-title">Risk Factors</div>
-                  <div className="sc-risk-list">
-                    <div className="sc-risk red">Champion departure — R. Vance (Aug)</div>
-                    <div className="sc-risk red">CFO migration fatigue signal</div>
-                    <div className="sc-risk amber">Multi-cloud board mandate (Q4)</div>
-                    <div className="sc-risk amber">AWS competitor workshops detected</div>
-                  </div>
-                </div>
-
-                <div className="sc-section">
-                  <div className="sc-section-title">CSAT Trend (6 mo)</div>
-                  <div className="sc-sparkline">
-                    <svg viewBox="0 0 200 40" className="sc-spark-svg">
-                      <polyline points="0,8 33,6 66,5 100,10 133,14 166,18 200,16" fill="none" stroke="#f59e0b" strokeWidth="2" />
-                      <circle cx="200" cy="16" r="3" fill="#f59e0b" />
-                    </svg>
-                    <div className="sc-spark-labels">
-                      <span>Jan</span><span>Feb</span><span>Mar</span><span>Apr</span><span>May</span><span>Jun</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="sc-section">
-                  <div className="sc-section-title">Renewal</div>
-                  <div className="sc-renewal">
-                    <span className="sc-renewal-date">Sep 15, 2026</span>
-                    <span className="sc-renewal-status amber">⚠️ Needs Attention</span>
-                  </div>
-                </div>
+            {!scorecardData ? (
+              <div className="watermelon-header">
+                <p className="watermelon-subtitle">Ask about a customer in the Chat tab to populate the scorecard with live data.</p>
               </div>
-
-              {/* Aster Pharmaceuticals */}
+            ) : (
+            <>
+            <div className="scorecard-comparison">
               <div className="sc-card">
                 <div className="sc-card-header">
-                  <div className="sc-account-name">Aster Pharmaceuticals</div>
-                  <div className="sc-tier platinum">Platinum</div>
+                  <div className="sc-account-name">{scorecardData.account_name}</div>
+                  <div className={`sc-tier ${(scorecardData.tier || '').toLowerCase()}`}>{scorecardData.tier || 'Account'}</div>
                 </div>
                 <div className="sc-health-bar">
-                  <div className="sc-health-indicator green" style={{ width: '87%' }}></div>
+                  <div
+                    className={`sc-health-indicator ${
+                      Number(scorecardData.health_score) >= 70 ? 'green' :
+                      Number(scorecardData.health_score) >= 40 ? 'amber' : 'red'
+                    }`}
+                    style={{ width: `${scorecardData.health_score || 50}%` }}
+                  ></div>
                 </div>
-                <div className="sc-health-label">Overall Health: <span className="green">Strong (87)</span></div>
+                <div className="sc-health-label">
+                  Overall Health: <span className={
+                    Number(scorecardData.health_score) >= 70 ? 'green' :
+                    Number(scorecardData.health_score) >= 40 ? 'amber' : 'red'
+                  }>
+                    {scorecardData.health_status || 'Unknown'} ({scorecardData.health_score || '?'})
+                  </span>
+                </div>
 
                 <div className="sc-metrics">
                   <div className="sc-metric-block">
                     <div className="sc-metric-title">Revenue</div>
-                    <div className="sc-metric-big green">$31.4M</div>
-                    <div className="sc-metric-delta green">↑ 14.2% YoY</div>
+                    <div className="sc-metric-big green">
+                      {typeof scorecardData.revenue === 'number'
+                        ? `$${(scorecardData.revenue / 1000000).toFixed(1)}M`
+                        : scorecardData.revenue || 'N/A'}
+                    </div>
+                    <div className={`sc-metric-delta ${scorecardData.revenue_growth ? 'green' : ''}`}>
+                      {scorecardData.revenue_growth
+                        ? `↑ ${typeof scorecardData.revenue_growth === 'number' ? (scorecardData.revenue_growth * 100).toFixed(1) + '%' : scorecardData.revenue_growth} YoY`
+                        : ''}
+                    </div>
                   </div>
                   <div className="sc-metric-block">
                     <div className="sc-metric-title">Pipeline</div>
-                    <div className="sc-metric-big">$8.9M</div>
-                    <div className="sc-metric-delta green">6 active deals</div>
+                    <div className="sc-metric-big">
+                      {scorecardData.pipeline_value
+                        ? `$${(scorecardData.pipeline_value / 1000000).toFixed(1)}M`
+                        : 'N/A'}
+                    </div>
+                    <div className="sc-metric-delta">{scorecardData.deal_count ? `${scorecardData.deal_count} active deals` : ''}</div>
                   </div>
                   <div className="sc-metric-block">
                     <div className="sc-metric-title">ACR (Monthly)</div>
-                    <div className="sc-metric-big green">$2.4M</div>
-                    <div className="sc-metric-delta green">↑ 18.7% MoM</div>
-                  </div>
-                  <div className="sc-metric-block">
-                    <div className="sc-metric-title">CSAT</div>
-                    <div className="sc-metric-big green">4.6/5</div>
-                    <div className="sc-metric-delta green">↑ 0.2 from Q1</div>
-                  </div>
-                </div>
-
-                <div className="sc-section">
-                  <div className="sc-section-title">Risk Factors</div>
-                  <div className="sc-risk-list">
-                    <div className="sc-risk green">No critical risks identified</div>
-                    <div className="sc-risk amber">Budget approval pending for AI platform</div>
-                  </div>
-                </div>
-
-                <div className="sc-section">
-                  <div className="sc-section-title">CSAT Trend (6 mo)</div>
-                  <div className="sc-sparkline">
-                    <svg viewBox="0 0 200 40" className="sc-spark-svg">
-                      <polyline points="0,22 33,18 66,14 100,12 133,10 166,8 200,6" fill="none" stroke="#22c55e" strokeWidth="2" />
-                      <circle cx="200" cy="6" r="3" fill="#22c55e" />
-                    </svg>
-                    <div className="sc-spark-labels">
-                      <span>Jan</span><span>Feb</span><span>Mar</span><span>Apr</span><span>May</span><span>Jun</span>
+                    <div className="sc-metric-big green">
+                      {scorecardData.acr
+                        ? (typeof scorecardData.acr === 'number' ? `$${(scorecardData.acr / 1000000).toFixed(1)}M` : scorecardData.acr)
+                        : 'N/A'}
+                    </div>
+                    <div className={`sc-metric-delta ${scorecardData.acr_growth ? 'green' : ''}`}>
+                      {scorecardData.acr_growth
+                        ? `↑ ${typeof scorecardData.acr_growth === 'number' ? (scorecardData.acr_growth * 100).toFixed(1) + '%' : scorecardData.acr_growth} MoM`
+                        : ''}
                     </div>
                   </div>
-                </div>
-
-                <div className="sc-section">
-                  <div className="sc-section-title">Renewal</div>
-                  <div className="sc-renewal">
-                    <span className="sc-renewal-date">Mar 1, 2027</span>
-                    <span className="sc-renewal-status green">✓ On Track</span>
+                  <div className="sc-metric-block">
+                    <div className="sc-metric-title">{scorecardData.nps ? 'NPS' : 'CSAT'}</div>
+                    <div className="sc-metric-big green">{scorecardData.nps || scorecardData.csat || 'N/A'}</div>
+                    <div className="sc-metric-delta"></div>
                   </div>
                 </div>
+
+                {scorecardData.risk_factors && scorecardData.risk_factors.length > 0 && (
+                  <div className="sc-section">
+                    <div className="sc-section-title">Risk Factors</div>
+                    <div className="sc-risk-list">
+                      {scorecardData.risk_factors.map((rf: any, i: number) => (
+                        <div className={`sc-risk ${rf.severity || 'amber'}`} key={i}>{rf.description}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {scorecardData.renewal_date && (
+                  <div className="sc-section">
+                    <div className="sc-section-title">Renewal</div>
+                    <div className="sc-renewal">
+                      <span className="sc-renewal-date">{scorecardData.renewal_date}</span>
+                      <span className={`sc-renewal-status ${
+                        (scorecardData.renewal_status || '').toLowerCase().includes('risk') ? 'amber' : 'green'
+                      }`}>
+                        {(scorecardData.renewal_status || '').toLowerCase().includes('risk') ? '⚠️' : '✓'} {scorecardData.renewal_status}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {scorecardData.margin && (
+                  <div className="sc-section">
+                    <div className="sc-section-title">Margin</div>
+                    <div className="sc-renewal">
+                      <span className="sc-renewal-date">
+                        {typeof scorecardData.margin === 'number' ? `${(scorecardData.margin * 100).toFixed(0)}%` : scorecardData.margin}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
             <div className="scorecard-footer">
               <div className="sc-insight-box">
-                <strong>💡 Portfolio Insight:</strong> Helios revenue masks underlying relationship erosion — agent intelligence detects 4 tacit signals missed by CRM. Aster shows genuine health trajectory with rising engagement and no hidden blockers.
+                <strong>💡 Account Insight:</strong> {scorecardData.account_name} ({scorecardData.account_code}) — {
+                  scorecardData.risk_factors && scorecardData.risk_factors.length > 0
+                    ? `Agent intelligence detected ${scorecardData.risk_factors.length} risk signal${scorecardData.risk_factors.length > 1 ? 's' : ''} not visible in standard dashboards.`
+                    : 'No hidden risks detected — account health appears genuine.'
+                }
               </div>
             </div>
+            </>
+            )}
           </div>
         ) : activeTab === 'watermelon' ? (
           <div className="watermelon-container">
+            {!watermelonData ? (
+              <div className="watermelon-header">
+                <h2>🍉 The Watermelon Reveal</h2>
+                <p className="watermelon-subtitle">Ask about a customer in the Chat tab to populate this view with live agent intelligence.</p>
+              </div>
+            ) : (
+            <>
             <div className="watermelon-header">
               <h2>🍉 The Watermelon Reveal</h2>
               <p className="watermelon-subtitle">What your systems see vs. what our agent uncovers</p>
               <div className="watermelon-account-badge">
-                Account: Helios Energy Group &nbsp;|&nbsp; TPID: TPD-44120 &nbsp;|&nbsp; Tier: Diamond
+                Account: {watermelonData.account_name} &nbsp;|&nbsp; {watermelonData.account_code} &nbsp;|&nbsp; {watermelonData.tier && `Tier: ${watermelonData.tier}`}
               </div>
             </div>
 
@@ -511,23 +518,42 @@ function App() {
               {/* System Dashboard — Green */}
               <div className="wm-panel wm-green-panel">
                 <div className="wm-panel-label">📊 System Dashboard — CRM + Telemetry</div>
-                <div className="wm-metric"><span>Annual Revenue (YTD)</span><span className="wm-val green">$48.2M (+8.1%)</span></div>
-                <div className="wm-metric"><span>Azure Consumption (MoM)</span><span className="wm-val green">↑ 12.4%</span></div>
-                <div className="wm-metric"><span>NPS Score</span><span className="wm-val green">72</span></div>
-                <div className="wm-metric"><span>Support Tickets (P1/P2)</span><span className="wm-val green">3 open</span></div>
-                <div className="wm-metric"><span>Engagement Score</span><span className="wm-pill green">● Healthy</span></div>
-                <div className="wm-metric"><span>Renewal Forecast</span><span className="wm-pill green">● On Track</span></div>
+                <div className="wm-metric"><span>Annual Revenue (YTD)</span><span className="wm-val green">
+                  {typeof watermelonData.system_metrics.revenue === 'number'
+                    ? `$${(watermelonData.system_metrics.revenue / 1000000).toFixed(1)}M`
+                    : watermelonData.system_metrics.revenue || 'N/A'}
+                  {watermelonData.system_metrics.revenue_growth && ` (+${typeof watermelonData.system_metrics.revenue_growth === 'number' ? (watermelonData.system_metrics.revenue_growth * 100).toFixed(1) + '%' : watermelonData.system_metrics.revenue_growth})`}
+                </span></div>
+                <div className="wm-metric"><span>Azure Consumption (MoM)</span><span className="wm-val green">
+                  {watermelonData.system_metrics.consumption_growth
+                    ? `↑ ${typeof watermelonData.system_metrics.consumption_growth === 'number' ? (watermelonData.system_metrics.consumption_growth * 100).toFixed(1) + '%' : watermelonData.system_metrics.consumption_growth}`
+                    : 'N/A'}
+                </span></div>
+                <div className="wm-metric"><span>NPS Score</span><span className="wm-val green">{watermelonData.system_metrics.nps || 'N/A'}</span></div>
+                <div className="wm-metric"><span>Support Tickets (P1/P2)</span><span className="wm-val green">{watermelonData.system_metrics.support_tickets || 'N/A'}</span></div>
+                <div className="wm-metric"><span>Engagement Score</span><span className="wm-pill green">● {watermelonData.system_metrics.engagement || 'Healthy'}</span></div>
+                <div className="wm-metric"><span>Renewal Forecast</span><span className="wm-pill green">● {watermelonData.system_metrics.renewal_status || 'On Track'}</span></div>
               </div>
 
               {/* Agent Intel — Red Inside */}
               <div className={`wm-panel wm-red-panel ${watermelonRevealed ? 'revealed' : ''}`}>
                 <div className="wm-panel-label">🚨 Agent Intel — Tacit Knowledge Layer</div>
-                <div className="wm-metric"><span>CFO Sentiment (private briefing)</span><span className="wm-val red">Migration Blocker</span></div>
-                <div className="wm-metric"><span>Board Directive (Q3)</span><span className="wm-val amber">Multi-cloud mandate</span></div>
-                <div className="wm-metric"><span>Champion Risk</span><span className="wm-val red">R. Vance → departing Aug</span></div>
-                <div className="wm-metric"><span>Budget Reallocation</span><span className="wm-val amber">-30% cloud by Q4</span></div>
-                <div className="wm-metric"><span>True Risk Assessment</span><span className="wm-pill amber">● At Risk</span></div>
-                <div className="wm-metric"><span>Real Renewal Probability</span><span className="wm-pill red">● 52% (was 94%)</span></div>
+                {watermelonData.watermelon_signals.length > 0 ? (
+                  watermelonData.watermelon_signals.map((sig: any, i: number) => (
+                    <div className="wm-metric" key={i}>
+                      <span>{sig.signal}</span>
+                      <span className={`wm-val ${sig.severity === 'red' ? 'red' : 'amber'}`}>{sig.source}</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="wm-metric"><span>No hidden signals detected</span><span className="wm-pill green">● Clear</span></div>
+                )}
+                {watermelonData.agent_metrics.true_renewal_probability && (
+                  <div className="wm-metric">
+                    <span>True Renewal Probability</span>
+                    <span className="wm-pill red">● {watermelonData.agent_metrics.true_renewal_probability}</span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -566,83 +592,48 @@ function App() {
               >
                 {watermelonRevealed ? '✓ Intelligence Layer Active' : '🔍 Activate Agent Intelligence Layer'}
               </button>
-
               {watermelonRevealed && (
-                <button
-                  className="wm-reset-btn"
-                  onClick={() => setWatermelonRevealed(false)}
-                >
+                <button className="wm-reset-btn" onClick={() => setWatermelonRevealed(false)}>
                   <RotateCcw size={14} /> Reset
                 </button>
               )}
             </div>
 
             {/* Revealed Content */}
-            {watermelonRevealed && (
+            {watermelonRevealed && watermelonData.watermelon_signals.length > 0 && (
               <div className="wm-revealed-content">
-                {/* Score comparison */}
                 <div className="wm-comparison">
                   <div className="wm-score-card">
                     <div className="wm-score-label">System Risk Score</div>
-                    <div className="wm-score green">94%</div>
+                    <div className="wm-score green">{watermelonData.agent_metrics.system_renewal_confidence || '94%'}</div>
                     <div className="wm-score-sub">Renewal Confidence</div>
                   </div>
                   <div className="wm-arrow">→</div>
                   <div className="wm-score-card">
                     <div className="wm-score-label">Agent-Adjusted Score</div>
-                    <div className="wm-score amber">52%</div>
+                    <div className="wm-score amber">{watermelonData.agent_metrics.true_renewal_probability || '??%'}</div>
                     <div className="wm-score-sub">True Renewal Probability</div>
                   </div>
                 </div>
 
-                {/* Watermelon signals */}
                 <div className="wm-signals-card">
-                  <h3>⚠️ Watermelon Signals Detected</h3>
+                  <h3>⚠️ Watermelon Signals Detected ({watermelonData.watermelon_signals.length})</h3>
                   <ul>
-                    <li>
-                      <span className="wm-flag red">🔴</span>
-                      <span><strong>CFO J. Okafor</strong> privately expressed "migration fatigue" in exec dinner. Board evaluating GCP/AWS alternatives for Q4 workloads. Not captured in any system.</span>
-                    </li>
-                    <li>
-                      <span className="wm-flag red">🔴</span>
-                      <span><strong>Champion departure:</strong> R. Vance (VP Cloud Platforms) accepted offer at competitor. Official announcement Aug 1. No successor identified.</span>
-                    </li>
-                    <li>
-                      <span className="wm-flag amber">🟡</span>
-                      <span><strong>Budget freeze signal:</strong> Helios CFO told field team "no new Azure commitments until board reviews multi-cloud strategy" — logged only in personal notes.</span>
-                    </li>
-                    <li>
-                      <span className="wm-flag amber">🟡</span>
-                      <span><strong>Competitor activity:</strong> AWS SA team conducted 3 architecture workshops with Helios infra team in May. Detected via scheduling overlap, not in CRM.</span>
-                    </li>
+                    {watermelonData.watermelon_signals.map((sig: any, i: number) => (
+                      <li key={i}>
+                        <span className={`wm-flag ${sig.severity === 'red' ? 'red' : 'amber'}`}>
+                          {sig.severity === 'red' ? '🔴' : '🟡'}
+                        </span>
+                        <span>{sig.signal}</span>
+                      </li>
+                    ))}
                   </ul>
-                </div>
-
-                {/* Timeline */}
-                <div className="wm-timeline-section">
-                  <h3>📅 Signal Timeline (not in CRM)</h3>
-                  <div className="wm-timeline">
-                    <div className="wm-timeline-item">
-                      <div className="wm-time">May 2 — Private dinner</div>
-                      <div className="wm-event">CFO mentions "migration fatigue" to field rep. Captured in personal notes only.</div>
-                    </div>
-                    <div className="wm-timeline-item">
-                      <div className="wm-time">May 14 — Calendar intel</div>
-                      <div className="wm-event">AWS SA team books 3 workshops with Helios infra team. No CRM entry.</div>
-                    </div>
-                    <div className="wm-timeline-item">
-                      <div className="wm-time">May 22 — LinkedIn signal</div>
-                      <div className="wm-event">R. Vance updates profile: "Open to opportunities." Champion risk indicator.</div>
-                    </div>
-                    <div className="wm-timeline-item">
-                      <div className="wm-time">Jun 3 — Board filing</div>
-                      <div className="wm-event">Helios board memo references "multi-cloud diversification mandate for FY27."</div>
-                    </div>
-                  </div>
                 </div>
 
                 <div className="wm-footer">Only our system catches this.</div>
               </div>
+            )}
+            </>
             )}
           </div>
         ) : activeTab === 'graph' && graphData ? (

@@ -210,6 +210,23 @@ class AgentOrchestrator:
                     yield {"type": "context_graph", "data": graph_data}
             except Exception:
                 pass  # Graph extraction is non-critical
+
+            # Send watermelon and scorecard data
+            try:
+                watermelon_data = self._extract_watermelon(context_content)
+                if watermelon_data:
+                    print(f"  → Emitting watermelon_data ({len(watermelon_data.get('watermelon_signals', []))} signals)")
+                    yield {"type": "watermelon_data", "data": watermelon_data}
+            except Exception as e:
+                print(f"  ⚠ Watermelon extraction error: {e}")
+
+            try:
+                scorecard_data = self._extract_scorecard(context_content)
+                if scorecard_data:
+                    print(f"  → Emitting scorecard_data (health={scorecard_data.get('health_score')})")
+                    yield {"type": "scorecard_data", "data": scorecard_data}
+            except Exception as e:
+                print(f"  ⚠ Scorecard extraction error: {e}")
         except Exception as e:
             yield {"type": "token", "agent": "context-builder", "content": f"⚠️ Could not gather context: {str(e)}"}
             yield {"type": "agent_completed", "agent": "context-builder", "content": f"Error: {str(e)}", "usage": TokenUsage().model_dump()}
@@ -229,10 +246,33 @@ class AgentOrchestrator:
 
         yield {"type": "done"}
 
+    def _parse_json(self, raw: str) -> dict:
+        """Parse JSON from agent output, handling markdown code fences."""
+        import re
+        text = raw.strip()
+        # Strip markdown code fences (```json ... ``` or ``` ... ```)
+        match = re.search(r'```(?:json)?\s*\n?(.*?)```', text, re.DOTALL)
+        if match:
+            text = match.group(1).strip()
+        # Try to find a JSON object if raw text has preamble
+        if not text.startswith('{'):
+            idx = text.find('{')
+            if idx >= 0:
+                text = text[idx:]
+                # Find matching closing brace
+                depth = 0
+                for i, ch in enumerate(text):
+                    if ch == '{': depth += 1
+                    elif ch == '}': depth -= 1
+                    if depth == 0:
+                        text = text[:i+1]
+                        break
+        return json.loads(text)
+
     def _summarize_context(self, raw_json: str) -> str:
         """Extract a human-readable summary from the context-builder's JSON output."""
         try:
-            data = json.loads(raw_json)
+            data = self._parse_json(raw_json)
             lines = []
             if data.get("account_code"):
                 lines.append(f"**Account:** {data.get('account_code')}")
@@ -260,15 +300,14 @@ class AgentOrchestrator:
                 lines.append(f"📋 **Data Gaps:** {len(gaps)} missing data points noted")
 
             return "\n".join(lines) + "\n\n✅ Context gathered successfully. Generating insights...\n"
-        except (json.JSONDecodeError, TypeError):
-            preview = raw_json[:200] + "..." if len(raw_json) > 200 else raw_json
+        except (json.JSONDecodeError, TypeError, ValueError):
             return f"Context gathered ({len(raw_json)} chars). Generating insights...\n"
 
     def _extract_graph(self, raw_json: str) -> dict:
         """Extract knowledge graph nodes and links from context-builder JSON."""
         try:
-            data = json.loads(raw_json)
-        except (json.JSONDecodeError, TypeError):
+            data = self._parse_json(raw_json)
+        except (json.JSONDecodeError, TypeError, ValueError):
             return None
 
         nodes = []
@@ -373,6 +412,146 @@ class AgentOrchestrator:
             return None
 
         return {"nodes": nodes, "links": links, "knowledge_graph_ref": data.get("knowledge_graph_ref", "")}
+
+    def _extract_watermelon(self, raw_json: str) -> dict:
+        """Extract watermelon reveal data from context-builder JSON."""
+        try:
+            data = self._parse_json(raw_json)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+
+        account_name = (data.get("aliases_resolved") or ["Unknown Account"])[0]
+        account_code = data.get("account_code", "")
+        context = data.get("context", {})
+        fin = context.get("financials", {})
+        tel = context.get("telemetry", {})
+        risk = context.get("risk", {})
+        account_info = context.get("account", {})
+
+        # System metrics (the "green" side)
+        system_metrics = {
+            "revenue": fin.get("ytd_revenue_usd") or fin.get("annual_revenue") or fin.get("revenue", "N/A"),
+            "revenue_growth": fin.get("yoy_growth_pct") or fin.get("growth", ""),
+            "consumption_growth": tel.get("mom_growth_pct") or tel.get("growth", ""),
+            "nps": risk.get("nps") or account_info.get("nps", ""),
+            "support_tickets": risk.get("open_p1_p2") or risk.get("support_tickets", ""),
+            "engagement": account_info.get("signals", [{}])[0].get("value", "healthy") if account_info.get("signals") else "N/A",
+            "renewal_status": risk.get("renewal_status") or "On Track",
+        }
+
+        # Watermelon flags (the "red inside")
+        flags = data.get("watermelon_flags", [])
+        watermelon_signals = []
+        for flag in flags:
+            if isinstance(flag, dict):
+                watermelon_signals.append({
+                    "severity": flag.get("severity", "amber"),
+                    "signal": flag.get("signal") or flag.get("description") or flag.get("finding", ""),
+                    "source": flag.get("source", "Agent intelligence"),
+                })
+            elif isinstance(flag, str):
+                watermelon_signals.append({"severity": "red", "signal": flag, "source": "Agent intelligence"})
+
+        # Agent-adjusted metrics
+        agent_metrics = {
+            "true_renewal_probability": risk.get("true_renewal_pct") or risk.get("renewal_probability", ""),
+            "system_renewal_confidence": risk.get("system_confidence") or "94%",
+            "champion_risk": risk.get("champion_risk") or "",
+            "competitor_activity": risk.get("competitor_activity") or "",
+            "budget_risk": fin.get("budget_risk") or "",
+        }
+
+        tier = account_info.get("tier", "")
+
+        return {
+            "account_name": account_name,
+            "account_code": account_code,
+            "tier": tier,
+            "system_metrics": system_metrics,
+            "watermelon_signals": watermelon_signals,
+            "agent_metrics": agent_metrics,
+        }
+
+    def _extract_scorecard(self, raw_json: str) -> dict:
+        """Extract executive scorecard data from context-builder JSON."""
+        try:
+            data = self._parse_json(raw_json)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+
+        account_name = (data.get("aliases_resolved") or ["Unknown Account"])[0]
+        account_code = data.get("account_code", "")
+        context = data.get("context", {})
+        fin = context.get("financials", {})
+        tel = context.get("telemetry", {})
+        risk = context.get("risk", {})
+        pipeline = context.get("pipeline", {})
+        account_info = context.get("account", {})
+
+        # Revenue
+        revenue = fin.get("ytd_revenue_usd") or fin.get("annual_revenue") or fin.get("revenue", 0)
+        revenue_growth = fin.get("yoy_growth_pct") or fin.get("growth_pct", "")
+        margin = fin.get("margin_pct", "")
+
+        # Pipeline
+        opps = pipeline.get("opportunities") or pipeline.get("deals") or []
+        total_pipeline = sum(
+            float(o.get("value", 0) or o.get("amount", 0) or 0)
+            for o in opps if isinstance(o, dict)
+        )
+        deal_count = len(opps)
+
+        # ACR / Consumption
+        acr = tel.get("monthly_acr") or tel.get("acr", "")
+        acr_growth = tel.get("mom_growth_pct") or tel.get("growth", "")
+
+        # CSAT / NPS
+        nps = risk.get("nps") or account_info.get("nps", "")
+        csat = risk.get("csat") or account_info.get("csat", "")
+        csat_trend = risk.get("csat_trend") or []
+
+        # Health score
+        health_score = risk.get("health_score") or risk.get("overall_score", "")
+        health_status = risk.get("overall_risk") or risk.get("system_sentiment", "")
+
+        # Risk factors
+        risk_factors = []
+        flags = data.get("watermelon_flags", [])
+        for flag in flags:
+            if isinstance(flag, dict):
+                risk_factors.append({
+                    "severity": flag.get("severity", "amber"),
+                    "description": flag.get("signal") or flag.get("description") or flag.get("finding", ""),
+                })
+            elif isinstance(flag, str):
+                risk_factors.append({"severity": "amber", "description": flag})
+
+        # Renewal
+        renewal_date = risk.get("renewal_date") or fin.get("renewal_date", "")
+        renewal_status = risk.get("renewal_status") or "On Track"
+
+        tier = account_info.get("tier", "")
+
+        return {
+            "account_name": account_name,
+            "account_code": account_code,
+            "tier": tier,
+            "health_score": health_score,
+            "health_status": health_status,
+            "revenue": revenue,
+            "revenue_growth": revenue_growth,
+            "margin": margin,
+            "pipeline_value": total_pipeline,
+            "deal_count": deal_count,
+            "acr": acr,
+            "acr_growth": acr_growth,
+            "nps": nps,
+            "csat": csat,
+            "csat_trend": csat_trend,
+            "risk_factors": risk_factors,
+            "renewal_date": renewal_date,
+            "renewal_status": renewal_status,
+        }
 
     async def _demo_orchestrate(self, query: str) -> AsyncGenerator[dict, None]:
         """Demo mode when no Azure connection is configured."""
