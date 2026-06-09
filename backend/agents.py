@@ -202,6 +202,14 @@ class AgentOrchestrator:
                 "content": summary,
                 "usage": ctx_usage.model_dump(),
             }
+
+            # Send the raw context data for knowledge graph visualization
+            try:
+                graph_data = self._extract_graph(context_content)
+                if graph_data:
+                    yield {"type": "context_graph", "data": graph_data}
+            except Exception:
+                pass  # Graph extraction is non-critical
         except Exception as e:
             yield {"type": "token", "agent": "context-builder", "content": f"⚠️ Could not gather context: {str(e)}"}
             yield {"type": "agent_completed", "agent": "context-builder", "content": f"Error: {str(e)}", "usage": TokenUsage().model_dump()}
@@ -253,9 +261,118 @@ class AgentOrchestrator:
 
             return "\n".join(lines) + "\n\n✅ Context gathered successfully. Generating insights...\n"
         except (json.JSONDecodeError, TypeError):
-            # If not JSON, just show a truncated version
             preview = raw_json[:200] + "..." if len(raw_json) > 200 else raw_json
             return f"Context gathered ({len(raw_json)} chars). Generating insights...\n"
+
+    def _extract_graph(self, raw_json: str) -> dict:
+        """Extract knowledge graph nodes and links from context-builder JSON."""
+        try:
+            data = json.loads(raw_json)
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+        nodes = []
+        links = []
+        node_ids = set()
+
+        def add_node(nid: str, label: str, group: str, details: str = ""):
+            if nid not in node_ids:
+                nodes.append({"id": nid, "label": label, "group": group, "details": details})
+                node_ids.add(nid)
+
+        # Central account node
+        account_name = (data.get("aliases_resolved") or ["Unknown"])[0]
+        account_code = data.get("account_code", "")
+        add_node("account", account_name, "account", f"Code: {account_code}")
+
+        # Executive / meeting participants
+        executive = data.get("executive", "CEO")
+        add_node("executive", executive, "person", "Our executive")
+        links.append({"source": "executive", "target": "account", "label": "meeting with"})
+
+        counterparty = data.get("counterparty", {})
+        if counterparty:
+            cp_name = counterparty.get("name", "Contact")
+            cp_title = counterparty.get("title", "")
+            add_node("counterparty", f"{cp_name} ({cp_title})", "person", "Customer contact")
+            links.append({"source": "counterparty", "target": "account", "label": "represents"})
+
+        # Context sections as category nodes
+        context = data.get("context", {})
+
+        # Financials
+        fin = context.get("financials", {})
+        if fin:
+            revenue = fin.get("annual_revenue") or fin.get("revenue", "")
+            add_node("financials", "Financials", "data", f"Revenue: {revenue}")
+            links.append({"source": "account", "target": "financials", "label": "financials"})
+
+        # Telemetry / usage
+        tel = context.get("telemetry", {})
+        if tel:
+            add_node("telemetry", "Usage & Telemetry", "data", str(tel.get("summary", ""))[:100])
+            links.append({"source": "account", "target": "telemetry", "label": "telemetry"})
+
+        # Risk
+        risk = context.get("risk", {})
+        if risk:
+            sentiment = risk.get("system_sentiment") or risk.get("overall_risk", "")
+            add_node("risk", "Risk Profile", "risk", f"Sentiment: {sentiment}")
+            links.append({"source": "account", "target": "risk", "label": "risk"})
+
+        # Staffing
+        staff = context.get("staffing", {})
+        if staff:
+            add_node("staffing", "Staffing", "data", "Team & resource data")
+            links.append({"source": "account", "target": "staffing", "label": "staffing"})
+            # Add individual team members if available
+            team = staff.get("team") or staff.get("key_contacts") or []
+            for i, member in enumerate(team[:5]):
+                if isinstance(member, dict):
+                    name = member.get("name", f"Person {i+1}")
+                    role = member.get("role", member.get("title", ""))
+                    mid = f"staff_{i}"
+                    add_node(mid, name, "person", role)
+                    links.append({"source": "staffing", "target": mid, "label": role[:20]})
+
+        # Pipeline / opportunities
+        pipeline = context.get("pipeline", {})
+        if pipeline:
+            add_node("pipeline", "Pipeline", "opportunity", "Deals & opportunities")
+            links.append({"source": "account", "target": "pipeline", "label": "pipeline"})
+            opps = pipeline.get("opportunities") or pipeline.get("deals") or []
+            for i, opp in enumerate(opps[:4]):
+                if isinstance(opp, dict):
+                    name = opp.get("name", opp.get("deal_name", f"Deal {i+1}"))
+                    value = opp.get("value", opp.get("amount", ""))
+                    oid = f"opp_{i}"
+                    add_node(oid, name, "opportunity", f"Value: {value}")
+                    links.append({"source": "pipeline", "target": oid, "label": "deal"})
+
+        # Relationship history
+        rel = context.get("relationship_history", {})
+        if rel:
+            add_node("relationship", "Relationship History", "data", "Past interactions")
+            links.append({"source": "account", "target": "relationship", "label": "history"})
+
+        # External context
+        ext = context.get("external_context", {})
+        if ext:
+            add_node("external", "External Intel", "data", "Market & industry data")
+            links.append({"source": "account", "target": "external", "label": "external"})
+
+        # Watermelon flags
+        flags = data.get("watermelon_flags", [])
+        for i, flag in enumerate(flags):
+            fid = f"flag_{i}"
+            desc = flag if isinstance(flag, str) else json.dumps(flag)[:80]
+            add_node(fid, f"⚠️ Flag {i+1}", "risk", desc)
+            links.append({"source": "account", "target": fid, "label": "conflict"})
+
+        if not nodes:
+            return None
+
+        return {"nodes": nodes, "links": links, "knowledge_graph_ref": data.get("knowledge_graph_ref", "")}
 
     async def _demo_orchestrate(self, query: str) -> AsyncGenerator[dict, None]:
         """Demo mode when no Azure connection is configured."""

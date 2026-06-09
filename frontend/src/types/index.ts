@@ -39,11 +39,12 @@ export interface SessionSummary {
 }
 
 export interface StreamEvent {
-  type: 'agent_started' | 'token' | 'agent_completed' | 'error' | 'done';
+  type: 'agent_started' | 'token' | 'agent_completed' | 'error' | 'done' | 'context_graph';
   agent?: string;
   content?: string;
   message_id?: string;
   usage?: TokenUsage;
   cumulative_usage?: TokenUsage;
   error?: string;
+  data?: any;
 }

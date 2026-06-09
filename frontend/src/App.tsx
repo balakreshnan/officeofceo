@@ -3,7 +3,27 @@ import { Session, SessionSummary, ChatMessage, StreamEvent, TokenUsage } from '.
 import { useStreamingChat } from './hooks/useStreamingChat';
 import { useVoiceInput } from './hooks/useVoiceInput';
 import ReactMarkdown from 'react-markdown';
-import { Send, Mic, MicOff, Plus, MessageSquare, Zap, X, Edit3, Check, RotateCcw } from 'lucide-react';
+import { Send, Mic, MicOff, Plus, MessageSquare, Zap, X, Edit3, Check, RotateCcw, GitBranch } from 'lucide-react';
+import ForceGraph2D from 'react-force-graph-2d';
+
+interface GraphNode {
+  id: string;
+  label: string;
+  group: string;
+  details?: string;
+}
+
+interface GraphLink {
+  source: string;
+  target: string;
+  label?: string;
+}
+
+interface GraphData {
+  nodes: GraphNode[];
+  links: GraphLink[];
+  knowledge_graph_ref?: string;
+}
 
 function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -11,8 +31,11 @@ function App() {
   const [input, setInput] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
+  const [activeTab, setActiveTab] = useState<'chat' | 'graph'>('chat');
+  const [graphData, setGraphData] = useState<GraphData | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const graphContainerRef = useRef<HTMLDivElement>(null);
 
   const { sendMessage, cancelStream, isStreaming, activeAgent } = useStreamingChat();
 
@@ -194,6 +217,12 @@ function App() {
           return { ...prev, messages: [...prev.messages, errorMsg] };
         });
         break;
+
+      case 'context_graph':
+        if (event.data) {
+          setGraphData(event.data);
+        }
+        break;
     }
   }
 
@@ -282,8 +311,26 @@ function App() {
       <main className="main-content">
         {/* Header */}
         <header className="chat-header">
-          <div className="chat-header-title">
-            {activeSession ? activeSession.title : 'Office of CEO - Insights Builder'}
+          <div className="chat-header-left">
+            <div className="chat-header-title">
+              {activeSession ? activeSession.title : 'Office of CEO - Insights Builder'}
+            </div>
+            <div className="tab-bar">
+              <button
+                className={`tab-btn ${activeTab === 'chat' ? 'active' : ''}`}
+                onClick={() => setActiveTab('chat')}
+              >
+                <MessageSquare size={14} /> Chat
+              </button>
+              <button
+                className={`tab-btn ${activeTab === 'graph' ? 'active' : ''}`}
+                onClick={() => setActiveTab('graph')}
+                disabled={!graphData}
+              >
+                <GitBranch size={14} /> Knowledge Graph
+                {graphData && <span className="tab-badge">{graphData.nodes.length}</span>}
+              </button>
+            </div>
           </div>
           <div className="token-counter">
             <Zap size={14} />
@@ -291,8 +338,83 @@ function App() {
           </div>
         </header>
 
-        {/* Messages or Welcome */}
-        {!activeSession || activeSession.messages.length === 0 ? (
+        {/* Tab Content */}
+        {activeTab === 'graph' && graphData ? (
+          <div className="graph-container" ref={graphContainerRef}>
+            <div className="graph-header">
+              <h3>🗺️ Customer Knowledge Graph</h3>
+              {graphData.knowledge_graph_ref && (
+                <span className="graph-ref">{graphData.knowledge_graph_ref}</span>
+              )}
+            </div>
+            <div className="graph-legend">
+              <span className="legend-item"><span className="legend-dot account"></span> Account</span>
+              <span className="legend-item"><span className="legend-dot person"></span> Person</span>
+              <span className="legend-item"><span className="legend-dot data"></span> Data</span>
+              <span className="legend-item"><span className="legend-dot opportunity"></span> Opportunity</span>
+              <span className="legend-item"><span className="legend-dot risk"></span> Risk</span>
+            </div>
+            <div className="graph-canvas">
+              <ForceGraph2D
+                graphData={{
+                  nodes: graphData.nodes.map(n => ({ ...n, name: n.label })),
+                  links: graphData.links,
+                }}
+                nodeLabel={(node: any) => `${node.label}\n${node.details || ''}`}
+                nodeColor={(node: any) => {
+                  const colors: Record<string, string> = {
+                    account: '#6366f1',
+                    person: '#22c55e',
+                    data: '#3b82f6',
+                    opportunity: '#f59e0b',
+                    risk: '#ef4444',
+                  };
+                  return colors[node.group] || '#94a3b8';
+                }}
+                nodeVal={(node: any) => node.group === 'account' ? 8 : 4}
+                linkLabel={(link: any) => link.label || ''}
+                linkColor={() => 'rgba(148, 163, 184, 0.4)'}
+                linkDirectionalArrowLength={4}
+                linkDirectionalArrowRelPos={0.8}
+                nodeCanvasObject={(node: any, ctx, globalScale) => {
+                  const label = node.label || '';
+                  const fontSize = Math.max(10 / globalScale, 3);
+                  const size = node.group === 'account' ? 10 : 6;
+                  const colors: Record<string, string> = {
+                    account: '#6366f1',
+                    person: '#22c55e',
+                    data: '#3b82f6',
+                    opportunity: '#f59e0b',
+                    risk: '#ef4444',
+                  };
+                  const color = colors[node.group] || '#94a3b8';
+
+                  // Draw node circle
+                  ctx.beginPath();
+                  ctx.arc(node.x, node.y, size, 0, 2 * Math.PI);
+                  ctx.fillStyle = color;
+                  ctx.fill();
+                  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+                  ctx.lineWidth = 1;
+                  ctx.stroke();
+
+                  // Draw label
+                  ctx.font = `${fontSize}px Inter, sans-serif`;
+                  ctx.textAlign = 'center';
+                  ctx.textBaseline = 'top';
+                  ctx.fillStyle = '#e2e8f0';
+                  ctx.fillText(label, node.x, node.y + size + 2);
+                }}
+                width={graphContainerRef.current?.clientWidth || 800}
+                height={500}
+                backgroundColor="transparent"
+              />
+            </div>
+          </div>
+        ) : (
+          <>
+          {/* Messages or Welcome */}
+          {!activeSession || activeSession.messages.length === 0 ? (
           <div className="welcome-screen">
             <div className="welcome-icon">🏢</div>
             <h2>Executive Insights Builder</h2>
@@ -405,6 +527,8 @@ function App() {
             )}
             <div ref={messagesEndRef} />
           </div>
+        )}
+        </>
         )}
 
         {/* Input Area */}
