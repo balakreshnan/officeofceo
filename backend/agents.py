@@ -21,20 +21,30 @@ class AgentOrchestrator:
 
     def __init__(self):
         connection_string = os.getenv("AZURE_AI_PROJECT_CONNECTION_STRING", "")
-        self.credential = DefaultAzureCredential()
-        self.client = AIProjectClient.from_connection_string(
-            conn_str=connection_string,
-            credential=self.credential,
-        )
         self.context_builder_name = os.getenv(
             "CONTEXT_BUILDER_AGENT_NAME", "oceo-context-builder"
         )
         self.insights_name = os.getenv("INSIGHTS_AGENT_NAME", "oceo-insights")
         self._context_builder_agent = None
         self._insights_agent = None
+        self.client = None
+
+        if connection_string and connection_string != "your-connection-string-here":
+            try:
+                self.credential = DefaultAzureCredential()
+                self.client = AIProjectClient.from_connection_string(
+                    conn_str=connection_string,
+                    credential=self.credential,
+                )
+            except Exception as e:
+                print(f"Warning: Could not initialize AI Project client: {e}")
+        else:
+            print("Info: No Azure AI connection string configured. Running in demo mode.")
 
     async def _get_agent_by_name(self, name: str):
         """Find an agent by name from the Foundry project."""
+        if not self.client:
+            raise ValueError("Azure AI Project client not configured")
         agents = self.client.agents.list_agents()
         for agent in agents.data:
             if agent.name == name:
@@ -178,6 +188,12 @@ class AgentOrchestrator:
         self, query: str, conversation_history: list[dict]
     ) -> AsyncGenerator[dict, None]:
         """Full orchestration: context-builder → insights, streaming results."""
+        if not self.client:
+            # Demo mode - simulate agent responses
+            async for event in self._demo_orchestrate(query):
+                yield event
+            return
+
         context_content = ""
 
         # Phase 1: Context Builder
@@ -191,5 +207,74 @@ class AgentOrchestrator:
             context_content, query, conversation_history
         ):
             yield event
+
+        yield {"type": "done"}
+
+    async def _demo_orchestrate(self, query: str) -> AsyncGenerator[dict, None]:
+        """Demo mode when no Azure connection is configured."""
+        import asyncio
+
+        # Simulate context-builder
+        yield {"type": "agent_started", "agent": "context-builder"}
+        demo_context = (
+            f"## Customer Research: Based on your query\n\n"
+            f"**Query:** {query}\n\n"
+            f"### Company Overview\n"
+            f"- Industry leader in their sector\n"
+            f"- Recent quarterly revenue growth of 12% YoY\n"
+            f"- Key executives: CEO, CTO, CFO identified\n\n"
+            f"### Recent News & Events\n"
+            f"- Announced digital transformation initiative\n"
+            f"- Expanding into cloud-native architecture\n"
+            f"- New partnership announcements in AI/ML space\n\n"
+            f"### Relationship History\n"
+            f"- Active customer for 3+ years\n"
+            f"- Current engagement across multiple product lines\n"
+            f"- Strategic account with executive sponsorship\n"
+        )
+        for char in demo_context:
+            yield {"type": "token", "agent": "context-builder", "content": char}
+            await asyncio.sleep(0.005)
+
+        yield {
+            "type": "agent_completed",
+            "agent": "context-builder",
+            "content": demo_context,
+            "usage": {"prompt_tokens": 150, "completion_tokens": 200, "total_tokens": 350},
+        }
+
+        # Simulate insights
+        yield {"type": "agent_started", "agent": "insights"}
+        demo_insights = (
+            f"## Executive Insights & Talking Points\n\n"
+            f"### 🎯 Key Talking Points\n"
+            f"1. **Digital Transformation Alignment** — Their cloud migration creates upsell opportunity\n"
+            f"2. **AI/ML Partnership** — Position our platform as their AI infrastructure backbone\n"
+            f"3. **Executive Engagement** — Strengthen C-suite relationship with joint innovation session\n\n"
+            f"### ⚡ Opportunities\n"
+            f"- Expand current engagement into AI workloads (~$2M potential)\n"
+            f"- Co-develop industry solution for their vertical\n"
+            f"- Joint case study for thought leadership\n\n"
+            f"### ⚠️ Risks to Address\n"
+            f"- Competitive pressure from alternative cloud providers\n"
+            f"- Budget constraints in current fiscal quarter\n"
+            f"- Technical debt in legacy systems may slow adoption\n\n"
+            f"### 📋 Recommended Discussion Agenda\n"
+            f"1. Acknowledge their growth and transformation progress\n"
+            f"2. Present AI/ML roadmap alignment\n"
+            f"3. Propose joint innovation workshop\n"
+            f"4. Discuss expanded partnership framework\n"
+            f"5. Agree on next steps and executive check-in cadence\n"
+        )
+        for char in demo_insights:
+            yield {"type": "token", "agent": "insights", "content": char}
+            await asyncio.sleep(0.005)
+
+        yield {
+            "type": "agent_completed",
+            "agent": "insights",
+            "content": demo_insights,
+            "usage": {"prompt_tokens": 250, "completion_tokens": 350, "total_tokens": 600},
+        }
 
         yield {"type": "done"}

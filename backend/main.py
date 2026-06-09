@@ -37,7 +37,8 @@ async def lifespan(app: FastAPI):
     global orchestrator
     orchestrator = AgentOrchestrator()
     try:
-        await orchestrator.initialize()
+        if orchestrator.client:
+            await orchestrator.initialize()
     except Exception as e:
         print(f"Warning: Agent initialization deferred - {e}")
     yield
