@@ -163,8 +163,10 @@ async def stream_chat(req: SendMessageRequest):
     async def event_generator():
         """Generate SSE events from agent orchestration."""
         context_message_id = None
+        customer_data_message_id = None
         insights_message_id = None
         context_content = ""
+        customer_data_content = ""
         insights_content = ""
 
         try:
@@ -180,6 +182,8 @@ async def stream_chat(req: SendMessageRequest):
                     session.messages.append(msg)
                     if agent == "context-builder":
                         context_message_id = msg.id
+                    elif agent == "customer-data":
+                        customer_data_message_id = msg.id
                     else:
                         insights_message_id = msg.id
 
@@ -203,23 +207,28 @@ async def stream_chat(req: SendMessageRequest):
                             if m.id == context_message_id:
                                 m.content = context_content
                                 break
+                        msg_id = context_message_id
+                    elif agent == "customer-data":
+                        customer_data_content += content
+                        for m in session.messages:
+                            if m.id == customer_data_message_id:
+                                m.content = customer_data_content
+                                break
+                        msg_id = customer_data_message_id
                     else:
                         insights_content += content
                         for m in session.messages:
                             if m.id == insights_message_id:
                                 m.content = insights_content
                                 break
+                        msg_id = insights_message_id
 
                     sse_data = json.dumps(
                         {
                             "type": "token",
                             "agent": agent,
                             "content": content,
-                            "message_id": (
-                                context_message_id
-                                if agent == "context-builder"
-                                else insights_message_id
-                            ),
+                            "message_id": msg_id,
                         }
                     )
                     yield f"data: {sse_data}\n\n"
@@ -229,8 +238,8 @@ async def stream_chat(req: SendMessageRequest):
                     usage_data = event.get("usage", {})
                     usage = TokenUsage(**usage_data)
 
-                    # Update token tracking
-                    if agent == "context-builder":
+                    # Update token tracking (customer-data shares context_builder bucket)
+                    if agent in ("context-builder", "customer-data"):
                         session.token_usage.context_builder.prompt_tokens += (
                             usage.prompt_tokens
                         )

@@ -2,7 +2,7 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
-  agent?: 'context-builder' | 'insights' | null;
+  agent?: 'context-builder' | 'customer-data' | 'insights' | null;
   is_edited: boolean;
   original_content?: string;
   timestamp: string;
