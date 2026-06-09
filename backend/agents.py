@@ -230,7 +230,14 @@ class AgentOrchestrator:
             f"### Relationship History\n"
             f"- Active customer for 3+ years\n"
             f"- Current engagement across multiple product lines\n"
-            f"- Strategic account with executive sponsorship\n"
+            f"- Strategic account with executive sponsorship\n\n"
+            f"---\n"
+            f"### 📚 Sources\n"
+            f"- [Company 10-K Annual Report (SEC Filing)](https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany) — Financial data, revenue growth\n"
+            f"- [Bloomberg Company Profile](https://www.bloomberg.com/profile/company) — Executive team, market cap\n"
+            f"- [Reuters News Feed](https://www.reuters.com/business) — Digital transformation announcement (May 2026)\n"
+            f"- [CRM: Salesforce Account Record](https://crm.internal/accounts) — Relationship history, engagement data\n"
+            f"- [LinkedIn Company Page](https://www.linkedin.com/company) — Recent hiring trends, org changes\n"
         )
         for char in demo_context:
             yield {"type": "token", "agent": "context-builder", "content": char}
@@ -264,7 +271,14 @@ class AgentOrchestrator:
             f"2. Present AI/ML roadmap alignment\n"
             f"3. Propose joint innovation workshop\n"
             f"4. Discuss expanded partnership framework\n"
-            f"5. Agree on next steps and executive check-in cadence\n"
+            f"5. Agree on next steps and executive check-in cadence\n\n"
+            f"---\n"
+            f"### 📚 Sources\n"
+            f"- [Gartner Industry Analysis (2026)](https://www.gartner.com/en/industries) — Competitive landscape, market positioning\n"
+            f"- [IDC MarketScape Report](https://www.idc.com/research) — AI/ML adoption benchmarks\n"
+            f"- [Internal Deal Desk: Opportunity Pipeline](https://msx.internal/opportunities) — Revenue potential, deal stage\n"
+            f"- [Customer Success Platform](https://success.internal/health-scores) — Account health score, NPS data\n"
+            f"- [McKinsey Digital Insights](https://www.mckinsey.com/capabilities/mckinsey-digital) — Digital transformation best practices\n"
         )
         for char in demo_insights:
             yield {"type": "token", "agent": "insights", "content": char}

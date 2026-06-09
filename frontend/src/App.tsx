@@ -351,7 +351,15 @@ function App() {
                     </div>
                   ) : (
                     <div className="message-content">
-                      <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      <ReactMarkdown
+                        components={{
+                          a: ({ href, children }) => (
+                            <a href={href} target="_blank" rel="noopener noreferrer">
+                              {children}
+                            </a>
+                          ),
+                        }}
+                      >{msg.content}</ReactMarkdown>
                     </div>
                   )}
                   {msg.role === 'assistant' && msg.content && !editingId && (
