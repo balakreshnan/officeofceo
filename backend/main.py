@@ -304,12 +304,8 @@ async def health_check():
     return {
         "status": "healthy",
         "agents": {
-            "context_builder": orchestrator._context_builder_agent is not None
-            if orchestrator
-            else False,
-            "insights": orchestrator._insights_agent is not None
-            if orchestrator
-            else False,
+            "context_builder": orchestrator.client is not None if orchestrator else False,
+            "insights": orchestrator.client is not None if orchestrator else False,
         },
     }
 

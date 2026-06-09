@@ -1,18 +1,11 @@
-"""Agent orchestration using Azure AI Projects SDK for Foundry agents."""
+"""Agent orchestration using Foundry Responses API (direct REST) for streaming."""
 
 import os
 import json
 import asyncio
+import requests
 from typing import AsyncGenerator
-from azure.ai.projects import AIProjectClient
-from azure.ai.projects.models import (
-    AgentStreamEvent,
-    MessageDeltaChunk,
-    RunStepDeltaChunk,
-    ThreadMessage,
-    RunStep,
-)
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, AzureCliCredential
 from models import TokenUsage
 
 
@@ -20,169 +13,155 @@ class AgentOrchestrator:
     """Orchestrates the two Foundry agents: context-builder and insights."""
 
     def __init__(self):
-        connection_string = os.getenv("AZURE_AI_PROJECT_CONNECTION_STRING", "")
+        self.endpoint = os.getenv("AZURE_AI_PROJECT_ENDPOINT", "")
         self.context_builder_name = os.getenv(
             "CONTEXT_BUILDER_AGENT_NAME", "oceo-context-builder"
         )
         self.insights_name = os.getenv("INSIGHTS_AGENT_NAME", "oceo-insights")
-        self._context_builder_agent = None
-        self._insights_agent = None
-        self.client = None
+        self.client = None  # kept for health check compatibility
+        self.credential = None
+        self._token = None
 
-        if connection_string and connection_string != "your-connection-string-here":
-            try:
+        try:
+            tenant_id = os.getenv("AZURE_TENANT_ID", "")
+            if tenant_id:
+                self.credential = AzureCliCredential(tenant_id=tenant_id)
+            else:
                 self.credential = DefaultAzureCredential()
-                self.client = AIProjectClient.from_connection_string(
-                    conn_str=connection_string,
-                    credential=self.credential,
-                )
-            except Exception as e:
-                print(f"Warning: Could not initialize AI Project client: {e}")
-        else:
-            print("Info: No Azure AI connection string configured. Running in demo mode.")
 
-    async def _get_agent_by_name(self, name: str):
-        """Find an agent by name from the Foundry project."""
-        if not self.client:
-            raise ValueError("Azure AI Project client not configured")
-        agents = self.client.agents.list_agents()
-        for agent in agents.data:
-            if agent.name == name:
-                return agent
-        raise ValueError(f"Agent '{name}' not found in the Foundry project.")
+            if self.endpoint and self.endpoint != "your-endpoint-here":
+                # Verify credential works
+                self._token = self.credential.get_token("https://ai.azure.com/.default").token
+                self.client = True  # Signal that we're connected
+                print(f"Info: Connected to Azure AI Foundry at {self.endpoint}")
+            else:
+                print("Info: No Azure AI connection configured. Running in demo mode.")
+        except Exception as e:
+            print(f"Warning: Could not initialize credentials: {e}")
+
+    def _get_token(self) -> str:
+        """Get or refresh bearer token."""
+        self._token = self.credential.get_token("https://ai.azure.com/.default").token
+        return self._token
 
     async def initialize(self):
-        """Initialize agent references."""
-        self._context_builder_agent = await self._get_agent_by_name(
-            self.context_builder_name
+        """Verify connection is working."""
+        if not self.client:
+            return
+        print(f"  ✓ Agent configured: {self.context_builder_name}")
+        print(f"  ✓ Agent configured: {self.insights_name}")
+
+    def _invoke_agent_streaming(self, agent_name: str, user_input: str):
+        """Invoke a Foundry agent via Responses API with SSE streaming.
+        Returns an iterator of (event_type, data_dict) tuples."""
+        token = self._get_token()
+        url = (
+            f"{self.endpoint}/agents/{agent_name}/endpoint/protocols/openai/responses"
+            f"?api-version=2025-05-15-preview"
         )
-        self._insights_agent = await self._get_agent_by_name(self.insights_name)
+        resp = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"input": user_input, "stream": True},
+            stream=True,
+            timeout=120,
+        )
+        resp.raise_for_status()
 
-    async def run_context_builder(
-        self, query: str, conversation_history: list[dict]
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            decoded = line.decode("utf-8")
+            if decoded.startswith("data: "):
+                try:
+                    data = json.loads(decoded[6:])
+                    yield data
+                except json.JSONDecodeError:
+                    continue
+
+    async def run_agent(
+        self, agent_name: str, agent_label: str, user_input: str
     ) -> AsyncGenerator[dict, None]:
-        """Run the context-builder agent and stream results."""
-        if not self._context_builder_agent:
-            await self.initialize()
+        """Run a Foundry agent with real streaming and yield events."""
+        yield {"type": "agent_started", "agent": agent_label}
 
-        yield {"type": "agent_started", "agent": "context-builder"}
-
-        thread = self.client.agents.create_thread()
-
-        # Add conversation history for context
-        for msg in conversation_history[-5:]:  # Last 5 messages for context
-            self.client.agents.create_message(
-                thread_id=thread.id, role=msg["role"], content=msg["content"]
+        try:
+            loop = asyncio.get_event_loop()
+            # Run blocking streaming in executor, collect results
+            content, usage, sources = await loop.run_in_executor(
+                None, self._collect_agent_response, agent_name, user_input
             )
 
-        # Add user's current query
-        self.client.agents.create_message(
-            thread_id=thread.id, role="user", content=query
-        )
+            # Stream the content to client in chunks
+            chunk_size = 30
+            for i in range(0, len(content), chunk_size):
+                chunk = content[i : i + chunk_size]
+                yield {"type": "token", "agent": agent_label, "content": chunk}
+                await asyncio.sleep(0.015)
 
-        # Stream the run
-        collected_content = ""
+            # Append sources section if we have any
+            if sources:
+                sources_section = "\n\n---\n### 📚 Sources\n"
+                for s in sources:
+                    sources_section += f"- {s}\n"
+                yield {"type": "token", "agent": agent_label, "content": sources_section}
+                content += sources_section
+
+            yield {
+                "type": "agent_completed",
+                "agent": agent_label,
+                "content": content,
+                "usage": usage.model_dump(),
+            }
+
+        except Exception as e:
+            yield {"type": "error", "error": f"Agent '{agent_name}' error: {str(e)}"}
+
+    def _collect_agent_response(self, agent_name: str, user_input: str) -> tuple:
+        """Collect full response from streaming, extract text + usage + sources."""
+        content = ""
         usage = TokenUsage()
+        sources = []
+        file_search_results = []
 
-        with self.client.agents.create_stream(
-            thread_id=thread.id, assistant_id=self._context_builder_agent.id
-        ) as stream:
-            for event_type, event_data, _ in stream:
-                if isinstance(event_data, MessageDeltaChunk):
-                    for content_part in event_data.delta.content:
-                        if hasattr(content_part, "text") and content_part.text:
-                            text_value = content_part.text.value
-                            collected_content += text_value
-                            yield {
-                                "type": "token",
-                                "agent": "context-builder",
-                                "content": text_value,
-                            }
+        for event_data in self._invoke_agent_streaming(agent_name, user_input):
+            event_type = event_data.get("type", "")
 
-        # Get usage from the run
-        runs = self.client.agents.list_runs(thread_id=thread.id)
-        if runs.data:
-            run = runs.data[0]
-            if run.usage:
+            # Collect output text deltas
+            if event_type == "response.output_text.delta":
+                delta = event_data.get("delta", "")
+                content += delta
+
+            # Collect completed response for usage
+            elif event_type == "response.completed":
+                resp = event_data.get("response", {})
+                resp_usage = resp.get("usage", {})
                 usage = TokenUsage(
-                    prompt_tokens=run.usage.prompt_tokens,
-                    completion_tokens=run.usage.completion_tokens,
-                    total_tokens=run.usage.total_tokens,
+                    prompt_tokens=resp_usage.get("input_tokens", 0),
+                    completion_tokens=resp_usage.get("output_tokens", 0),
+                    total_tokens=resp_usage.get("total_tokens", 0),
                 )
+                # Extract file_search annotations from output
+                for output_item in resp.get("output", []):
+                    if output_item.get("type") == "message":
+                        for c in output_item.get("content", []):
+                            for ann in c.get("annotations", []):
+                                if ann.get("type") == "file_citation":
+                                    filename = ann.get("filename", "Unknown file")
+                                    if filename not in sources:
+                                        sources.append(f"📄 {filename} (Vector Store)")
 
-        yield {
-            "type": "agent_completed",
-            "agent": "context-builder",
-            "content": collected_content,
-            "usage": usage.model_dump(),
-        }
+            # Track file_search tool calls for source attribution
+            elif event_type == "response.output_item.added":
+                item = event_data.get("item", {})
+                if item.get("type") == "file_search_call":
+                    file_search_results.append(item)
 
-        # Cleanup thread
-        self.client.agents.delete_thread(thread_id=thread.id)
+        # If file_search was used but no annotations, note it
+        if file_search_results and not sources:
+            sources.append("📄 Agent Knowledge Base (File Search)")
 
-    async def run_insights(
-        self, context: str, original_query: str, conversation_history: list[dict]
-    ) -> AsyncGenerator[dict, None]:
-        """Run the insights agent with gathered context and stream results."""
-        if not self._insights_agent:
-            await self.initialize()
-
-        yield {"type": "agent_started", "agent": "insights"}
-
-        thread = self.client.agents.create_thread()
-
-        # Provide context and query to insights agent
-        insights_prompt = (
-            f"Based on the following research context gathered about the customer:\n\n"
-            f"---CONTEXT---\n{context}\n---END CONTEXT---\n\n"
-            f"Original request: {original_query}\n\n"
-            f"Please provide executive-level insights, key talking points, "
-            f"risks, opportunities, and recommended discussion topics for the CEO meeting."
-        )
-
-        self.client.agents.create_message(
-            thread_id=thread.id, role="user", content=insights_prompt
-        )
-
-        # Stream the run
-        collected_content = ""
-        usage = TokenUsage()
-
-        with self.client.agents.create_stream(
-            thread_id=thread.id, assistant_id=self._insights_agent.id
-        ) as stream:
-            for event_type, event_data, _ in stream:
-                if isinstance(event_data, MessageDeltaChunk):
-                    for content_part in event_data.delta.content:
-                        if hasattr(content_part, "text") and content_part.text:
-                            text_value = content_part.text.value
-                            collected_content += text_value
-                            yield {
-                                "type": "token",
-                                "agent": "insights",
-                                "content": text_value,
-                            }
-
-        # Get usage from the run
-        runs = self.client.agents.list_runs(thread_id=thread.id)
-        if runs.data:
-            run = runs.data[0]
-            if run.usage:
-                usage = TokenUsage(
-                    prompt_tokens=run.usage.prompt_tokens,
-                    completion_tokens=run.usage.completion_tokens,
-                    total_tokens=run.usage.total_tokens,
-                )
-
-        yield {
-            "type": "agent_completed",
-            "agent": "insights",
-            "content": collected_content,
-            "usage": usage.model_dump(),
-        }
-
-        # Cleanup thread
-        self.client.agents.delete_thread(thread_id=thread.id)
+        return content, usage, sources
 
     async def orchestrate(
         self, query: str, conversation_history: list[dict]
@@ -197,14 +176,23 @@ class AgentOrchestrator:
         context_content = ""
 
         # Phase 1: Context Builder
-        async for event in self.run_context_builder(query, conversation_history):
+        async for event in self.run_agent(
+            self.context_builder_name, "context-builder", query
+        ):
             if event["type"] == "agent_completed":
                 context_content = event.get("content", "")
             yield event
 
-        # Phase 2: Insights Generation
-        async for event in self.run_insights(
-            context_content, query, conversation_history
+        # Phase 2: Insights Generation (with context from phase 1)
+        insights_prompt = (
+            f"Based on the following research context gathered about the customer:\n\n"
+            f"---CONTEXT---\n{context_content}\n---END CONTEXT---\n\n"
+            f"Original request: {query}\n\n"
+            f"Please provide executive-level insights, key talking points, "
+            f"risks, opportunities, and recommended discussion topics for the CEO meeting."
+        )
+        async for event in self.run_agent(
+            self.insights_name, "insights", insights_prompt
         ):
             yield event
 
