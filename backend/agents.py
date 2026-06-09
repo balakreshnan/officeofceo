@@ -52,8 +52,7 @@ class AgentOrchestrator:
         print(f"  ✓ Agent configured: {self.insights_name}")
 
     def _invoke_agent_streaming(self, agent_name: str, user_input: str):
-        """Invoke a Foundry agent via Responses API with SSE streaming.
-        Returns an iterator of (event_type, data_dict) tuples."""
+        """Invoke a Foundry agent via Responses API with SSE streaming."""
         token = self._get_token()
         url = (
             f"{self.endpoint}/agents/{agent_name}/endpoint/protocols/openai/responses"
@@ -87,7 +86,6 @@ class AgentOrchestrator:
 
         try:
             loop = asyncio.get_event_loop()
-            # Run blocking streaming in executor, collect results
             content, usage, sources = await loop.run_in_executor(
                 None, self._collect_agent_response, agent_name, user_input
             )
@@ -166,37 +164,98 @@ class AgentOrchestrator:
     async def orchestrate(
         self, query: str, conversation_history: list[dict]
     ) -> AsyncGenerator[dict, None]:
-        """Full orchestration: context-builder → insights, streaming results."""
+        """Full orchestration: context-builder (JSON) → insights (summary)."""
         if not self.client:
-            # Demo mode - simulate agent responses
             async for event in self._demo_orchestrate(query):
                 yield event
             return
 
+        # Phase 1: Context Builder — gathers structured JSON context
+        yield {"type": "agent_started", "agent": "context-builder"}
+        yield {
+            "type": "token",
+            "agent": "context-builder",
+            "content": "🔍 Researching customer data from knowledge base...\n",
+        }
+
         context_content = ""
+        try:
+            loop = asyncio.get_event_loop()
+            context_content, ctx_usage, ctx_sources = await loop.run_in_executor(
+                None, self._collect_agent_response, self.context_builder_name, query
+            )
 
-        # Phase 1: Context Builder
-        async for event in self.run_agent(
-            self.context_builder_name, "context-builder", query
-        ):
-            if event["type"] == "agent_completed":
-                context_content = event.get("content", "")
-            yield event
+            # Show a brief summary of what was gathered
+            summary = self._summarize_context(context_content)
+            yield {"type": "token", "agent": "context-builder", "content": summary}
 
-        # Phase 2: Insights Generation (with context from phase 1)
-        insights_prompt = (
-            f"Based on the following research context gathered about the customer:\n\n"
-            f"---CONTEXT---\n{context_content}\n---END CONTEXT---\n\n"
-            f"Original request: {query}\n\n"
-            f"Please provide executive-level insights, key talking points, "
-            f"risks, opportunities, and recommended discussion topics for the CEO meeting."
+            if ctx_sources:
+                sources_section = "\n---\n### 📚 Data Sources\n"
+                for s in ctx_sources:
+                    sources_section += f"- {s}\n"
+                yield {"type": "token", "agent": "context-builder", "content": sources_section}
+                summary += sources_section
+
+            yield {
+                "type": "agent_completed",
+                "agent": "context-builder",
+                "content": summary,
+                "usage": ctx_usage.model_dump(),
+            }
+        except Exception as e:
+            yield {"type": "token", "agent": "context-builder", "content": f"⚠️ Could not gather context: {str(e)}"}
+            yield {"type": "agent_completed", "agent": "context-builder", "content": f"Error: {str(e)}", "usage": TokenUsage().model_dump()}
+
+        # Phase 2: Insights — summarizes the JSON into executive briefing
+        # Pass the raw JSON context directly; the insights agent will summarize it
+        insights_input = (
+            f"Here is the structured customer context data (JSON) from our research:\n\n"
+            f"{context_content}\n\n"
+            f"Original user request: {query}\n\n"
+            f"Please summarize this into an executive briefing."
         )
         async for event in self.run_agent(
-            self.insights_name, "insights", insights_prompt
+            self.insights_name, "insights", insights_input
         ):
             yield event
 
         yield {"type": "done"}
+
+    def _summarize_context(self, raw_json: str) -> str:
+        """Extract a human-readable summary from the context-builder's JSON output."""
+        try:
+            data = json.loads(raw_json)
+            lines = []
+            if data.get("account_code"):
+                lines.append(f"**Account:** {data.get('account_code')}")
+            aliases = data.get("aliases_resolved", [])
+            if aliases:
+                lines.append(f"**Customer:** {aliases[0]}")
+            if data.get("meeting_purpose"):
+                lines.append(f"**Meeting Purpose:** {data['meeting_purpose']}")
+            if data.get("meeting_date"):
+                lines.append(f"**Meeting Date:** {data['meeting_date']}")
+            if data.get("counterparty"):
+                cp = data["counterparty"]
+                lines.append(f"**Meeting With:** {cp.get('name', 'N/A')} ({cp.get('title', 'N/A')})")
+            # Count data sections found
+            context = data.get("context", {})
+            sections_found = [k for k in context.keys() if context[k]]
+            if sections_found:
+                lines.append(f"**Data Gathered:** {', '.join(sections_found)}")
+            # Watermelon flags
+            flags = data.get("watermelon_flags", [])
+            if flags:
+                lines.append(f"⚠️ **Watermelon Flags:** {len(flags)} conflicting signals detected")
+            gaps = data.get("data_gaps", [])
+            if gaps:
+                lines.append(f"📋 **Data Gaps:** {len(gaps)} missing data points noted")
+
+            return "\n".join(lines) + "\n\n✅ Context gathered successfully. Generating insights...\n"
+        except (json.JSONDecodeError, TypeError):
+            # If not JSON, just show a truncated version
+            preview = raw_json[:200] + "..." if len(raw_json) > 200 else raw_json
+            return f"Context gathered ({len(raw_json)} chars). Generating insights...\n"
 
     async def _demo_orchestrate(self, query: str) -> AsyncGenerator[dict, None]:
         """Demo mode when no Azure connection is configured."""
