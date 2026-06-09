@@ -266,6 +266,12 @@ async def stream_chat(req: SendMessageRequest):
                     )
                     yield f"data: {sse_data}\n\n"
 
+                elif event_type == "context_graph":
+                    sse_data = json.dumps(
+                        {"type": "context_graph", "data": event.get("data")}
+                    )
+                    yield f"data: {sse_data}\n\n"
+
                 elif event_type == "done":
                     sse_data = json.dumps(
                         {
