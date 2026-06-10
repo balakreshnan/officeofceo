@@ -211,9 +211,13 @@ class AgentOrchestrator:
             try:
                 graph_data = self._extract_graph(context_content)
                 if graph_data:
+                    print(f"  → Emitting context_graph ({len(graph_data.get('nodes', []))} nodes, {len(graph_data.get('links', []))} links)")
                     yield {"type": "context_graph", "data": graph_data}
-            except Exception:
-                pass  # Graph extraction is non-critical
+                else:
+                    print(f"  ⚠ Graph extraction returned None. Context length: {len(context_content)}")
+                    print(f"  ⚠ Context preview: {context_content[:200]}")
+            except Exception as e:
+                print(f"  ⚠ Graph extraction error: {e}")
 
             # Send watermelon and scorecard data
             try:
@@ -496,11 +500,68 @@ class AgentOrchestrator:
             if isinstance(flag, dict):
                 watermelon_signals.append({
                     "severity": flag.get("severity", "amber"),
-                    "signal": flag.get("signal") or flag.get("description") or flag.get("finding", ""),
+                    "signal": flag.get("signal") or flag.get("description") or flag.get("finding", "Unknown signal"),
                     "source": flag.get("source", "Agent intelligence"),
                 })
             elif isinstance(flag, str):
                 watermelon_signals.append({"severity": "red", "signal": flag, "source": "Agent intelligence"})
+
+        # Also check risk section for hidden signals
+        risk_items = risk.get("risks") or risk.get("risk_factors") or []
+        if not watermelon_signals and risk_items:
+            for item in risk_items[:5]:
+                if isinstance(item, dict):
+                    watermelon_signals.append({
+                        "severity": item.get("severity", "amber"),
+                        "signal": item.get("description") or item.get("risk") or str(item),
+                        "source": "Risk analysis",
+                    })
+                elif isinstance(item, str):
+                    watermelon_signals.append({"severity": "amber", "signal": item, "source": "Risk analysis"})
+
+        # Derive signals from open incidents, staffing gaps, and telemetry
+        if not watermelon_signals:
+            incidents = risk.get("open_incidents", [])
+            for inc in incidents[:3]:
+                if isinstance(inc, dict):
+                    watermelon_signals.append({
+                        "severity": "red" if inc.get("severity") == "P1" else "amber",
+                        "signal": f"{inc.get('severity', 'P2')} incident: {inc.get('summary', 'Open issue')} (aging {inc.get('aging_days', '?')} days)",
+                        "source": risk.get("source", "ServiceNow"),
+                    })
+
+            # Staffing concerns
+            staffing = context.get("staffing", {})
+            if staffing.get("open_roles") and staffing.get("key_open_role"):
+                watermelon_signals.append({
+                    "severity": "amber",
+                    "signal": f"Key role unfilled: {staffing['key_open_role']}",
+                    "source": staffing.get("source", "Workday"),
+                })
+            if staffing.get("attrition_last_quarter", 0) > 1:
+                watermelon_signals.append({
+                    "severity": "amber",
+                    "signal": f"Team attrition: {staffing['attrition_last_quarter']} departures last quarter",
+                    "source": staffing.get("source", "Workday"),
+                })
+
+            # Telemetry decline
+            growth = tel.get("qoq_growth_pct") or tel.get("mom_growth_pct")
+            if growth and isinstance(growth, (int, float)) and growth < 0:
+                watermelon_signals.append({
+                    "severity": "amber",
+                    "signal": f"Usage declining: {growth*100:.1f}% QoQ ({tel.get('consumption_trend', 'declining')})",
+                    "source": tel.get("source", "Telemetry"),
+                })
+
+            # Sentiment not green
+            sentiment = risk.get("system_sentiment", "")
+            if sentiment in ("amber", "red"):
+                watermelon_signals.append({
+                    "severity": sentiment,
+                    "signal": f"System sentiment: {sentiment} (despite positive revenue metrics)",
+                    "source": risk.get("source", "Risk engine"),
+                })
 
         # Agent-adjusted metrics
         agent_metrics = {
@@ -537,11 +598,18 @@ class AgentOrchestrator:
         risk = context.get("risk", {})
         pipeline = context.get("pipeline", {})
         account_info = context.get("account", {})
+        staffing = context.get("staffing", {})
 
         # Revenue
         revenue = fin.get("ytd_revenue_usd") or fin.get("annual_revenue") or fin.get("revenue", 0)
-        revenue_growth = fin.get("yoy_growth_pct") or fin.get("growth_pct", "")
+        prior_revenue = fin.get("prior_ytd_revenue_usd", 0)
+        if revenue and prior_revenue and isinstance(revenue, (int, float)) and isinstance(prior_revenue, (int, float)) and prior_revenue > 0:
+            revenue_growth = f"{((revenue - prior_revenue) / prior_revenue) * 100:.1f}%"
+        else:
+            revenue_growth = fin.get("yoy_growth_pct") or fin.get("growth_pct", "N/A")
         margin = fin.get("margin_pct", "")
+        if isinstance(margin, float) and margin < 1:
+            margin = f"{margin * 100:.0f}%"
 
         # Pipeline
         opps = pipeline.get("opportunities") or pipeline.get("deals") or []
@@ -551,20 +619,26 @@ class AgentOrchestrator:
         )
         deal_count = len(opps)
 
-        # ACR / Consumption
-        acr = tel.get("monthly_acr") or tel.get("acr", "")
-        acr_growth = tel.get("mom_growth_pct") or tel.get("growth", "")
+        # Telemetry
+        active_seats = tel.get("monthly_active_seats") or tel.get("active_users", "")
+        consumption_trend = tel.get("consumption_trend") or tel.get("trend", "")
+        qoq_growth = tel.get("qoq_growth_pct") or tel.get("mom_growth_pct", "")
+        if isinstance(qoq_growth, float):
+            qoq_growth = f"{qoq_growth * 100:.1f}%"
 
         # CSAT / NPS
-        nps = risk.get("nps") or account_info.get("nps", "")
         csat = risk.get("csat") or account_info.get("csat", "")
-        csat_trend = risk.get("csat_trend") or []
+        csat_prior = risk.get("csat_prior", "")
+        nps = risk.get("nps") or account_info.get("nps", "")
 
-        # Health score
+        # Health score — derive from system_sentiment if not explicit
         health_score = risk.get("health_score") or risk.get("overall_score", "")
-        health_status = risk.get("overall_risk") or risk.get("system_sentiment", "")
+        health_status = risk.get("system_sentiment") or risk.get("overall_risk", "")
+        if not health_score and health_status:
+            score_map = {"green": 85, "amber": 65, "red": 40}
+            health_score = score_map.get(health_status, 70)
 
-        # Risk factors
+        # Risk factors from incidents and flags
         risk_factors = []
         flags = data.get("watermelon_flags", [])
         for flag in flags:
@@ -575,6 +649,23 @@ class AgentOrchestrator:
                 })
             elif isinstance(flag, str):
                 risk_factors.append({"severity": "amber", "description": flag})
+
+        # Add incidents as risk factors
+        incidents = risk.get("open_incidents", [])
+        for inc in incidents[:3]:
+            if isinstance(inc, dict):
+                risk_factors.append({
+                    "severity": "red" if inc.get("severity") == "P1" else "amber",
+                    "description": f"{inc.get('severity', 'P2')}: {inc.get('summary', 'Open incident')}",
+                })
+
+        # Staffing
+        open_roles = staffing.get("open_roles", 0)
+        if open_roles and staffing.get("key_open_role"):
+            risk_factors.append({
+                "severity": "amber",
+                "description": f"Unfilled: {staffing['key_open_role']}",
+            })
 
         # Renewal
         renewal_date = risk.get("renewal_date") or fin.get("renewal_date", "")
@@ -593,14 +684,18 @@ class AgentOrchestrator:
             "margin": margin,
             "pipeline_value": total_pipeline,
             "deal_count": deal_count,
-            "acr": acr,
-            "acr_growth": acr_growth,
+            "active_seats": active_seats,
+            "consumption_trend": consumption_trend,
+            "qoq_growth": qoq_growth,
             "nps": nps,
             "csat": csat,
-            "csat_trend": csat_trend,
+            "csat_prior": csat_prior,
             "risk_factors": risk_factors,
             "renewal_date": renewal_date,
             "renewal_status": renewal_status,
+            "open_p1": risk.get("open_P1", 0),
+            "staffing_ftes": staffing.get("billable_ftes", ""),
+            "staffing_open_roles": open_roles,
         }
 
     async def _demo_orchestrate(self, query: str) -> AsyncGenerator[dict, None]:
