@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { ChevronDown, ChevronRight, Edit3, Check, X, RotateCcw, BookOpen } from 'lucide-react';
+import { ChevronDown, ChevronRight, Edit3, Check, X, RotateCcw, BookOpen, Volume2, Loader2, Square } from 'lucide-react';
 import { ChatMessage } from '../types';
 
 interface Props {
@@ -12,6 +12,9 @@ interface Props {
   onSaveEdit: (id: string) => void;
   onCancelEdit: () => void;
   onRevert: (id: string) => void;
+  onSpeak: (text: string, id: string) => void;
+  speakingId: string | null;
+  loadingId: string | null;
 }
 
 const AGENT_META: Record<string, { label: string; icon: string; cls: string }> = {
@@ -19,6 +22,19 @@ const AGENT_META: Record<string, { label: string; icon: string; cls: string }> =
   'customer-data': { label: 'Customer Data', icon: '📊', cls: 'customer-data' },
   'insights': { label: 'Insights', icon: '💡', cls: 'insights' },
 };
+
+/** Strip markdown syntax to readable plain text for speech synthesis. */
+function toPlainText(md: string): string {
+  return md
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/[*_>#|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 /** Split a message body from its trailing "Sources" section. */
 function splitSources(content: string): { body: string; sources: string[] } {
@@ -36,6 +52,7 @@ function splitSources(content: string): { body: string; sources: string[] } {
 
 export default function ChatMessageCard({
   msg, editingId, editContent, setEditContent, onStartEdit, onSaveEdit, onCancelEdit, onRevert,
+  onSpeak, speakingId, loadingId,
 }: Props) {
   const isAssistant = msg.role === 'assistant';
   const meta = msg.agent ? AGENT_META[msg.agent] : undefined;
@@ -73,6 +90,17 @@ export default function ChatMessageCard({
           </span>
           {!open && body && <span className="agent-card-peek">{body.replace(/[#*`>-]/g, '').slice(0, 70).trim()}…</span>}
           {sources.length > 0 && <span className="agent-card-srccount"><BookOpen size={11} /> {sources.length}</span>}
+          {body && (
+            <button
+              className={`agent-card-speak ${speakingId === msg.id ? 'active' : ''}`}
+              title={speakingId === msg.id ? 'Stop reading' : 'Read aloud'}
+              onClick={(e) => { e.stopPropagation(); onSpeak(toPlainText(body), msg.id); }}
+            >
+              {loadingId === msg.id ? <Loader2 size={13} className="spin" />
+                : speakingId === msg.id ? <Square size={13} />
+                : <Volume2 size={13} />}
+            </button>
+          )}
         </div>
 
         {open && (

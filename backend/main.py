@@ -38,6 +38,7 @@ from models import (
     SaveDraftRequest,
     EvaluateDraftRequest,
     RephraseRequest,
+    TTSRequest,
     StreamEvent,
 )
 from agents import AgentOrchestrator
@@ -426,7 +427,28 @@ async def rephrase(req: RephraseRequest):
     return result
 
 
-# --- Streaming Chat ---
+# --- Text-to-Speech (voice read-out) ---
+
+
+@app.post("/api/tts")
+async def tts(req: TTSRequest):
+    """Synthesize speech from text using the AUDIO_MODEL realtime deployment.
+
+    Returns a WAV audio payload. On any failure (model not configured or
+    synthesis error) responds 503 so the client can fall back to the browser
+    SpeechSynthesis API.
+    """
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="No text provided to read aloud")
+    try:
+        audio = await orchestrator.synthesize_speech(req.text, req.voice or "alloy")
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return Response(
+        content=audio,
+        media_type="audio/wav",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.post("/api/chat/stream")

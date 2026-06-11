@@ -3,6 +3,9 @@
 import os
 import json
 import asyncio
+import base64
+import io
+import wave
 import requests
 from typing import AsyncGenerator
 from azure.identity import DefaultAzureCredential, AzureCliCredential
@@ -25,6 +28,10 @@ class AgentOrchestrator:
         self.openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
         self.responses_api_version = os.getenv(
             "AZURE_OPENAI_RESPONSES_API_VERSION", "2025-04-01-preview"
+        )
+        self.audio_model = os.getenv("AUDIO_MODEL", "gpt-realtime-1.5")
+        self.realtime_api_version = os.getenv(
+            "AZURE_OPENAI_REALTIME_API_VERSION", "2025-04-01-preview"
         )
         # Base resource endpoint (strip the /api/projects/... suffix used for agents)
         self.resource_endpoint = self.endpoint.split("/api/projects/")[0] if self.endpoint else ""
@@ -135,6 +142,109 @@ class AgentOrchestrator:
     def _demo_rephrase(self, text: str) -> str:
         """Trivial offline fallback when no model is available."""
         return text.strip()
+
+    async def synthesize_speech(self, text: str, voice: str = "alloy") -> bytes:
+        """Synthesize speech from text using the AUDIO_MODEL realtime deployment.
+
+        Connects to the Azure AI Foundry / OpenAI realtime WebSocket endpoint,
+        authenticates with a DefaultAzureCredential bearer token scoped to the
+        Cognitive Services data plane, drives a text-in / audio-out turn, and
+        returns a complete 24 kHz mono 16-bit WAV byte payload.
+
+        Raises RuntimeError if no Azure connection is configured or synthesis
+        fails (the route maps that to a 503 so the client can fall back to the
+        browser speech synthesizer).
+        """
+        text = (text or "").strip()
+        if not text:
+            raise RuntimeError("No text provided for speech synthesis.")
+        if not self.client or not self.resource_endpoint:
+            raise RuntimeError("Azure audio model not configured.")
+
+        # Keep latency reasonable for long documents.
+        if len(text) > 6000:
+            text = text[:6000]
+
+        import websockets
+        from azure.identity import DefaultAzureCredential
+
+        token = DefaultAzureCredential().get_token(
+            "https://cognitiveservices.azure.com/.default"
+        ).token
+
+        ws_base = self.resource_endpoint.replace("https://", "wss://").replace("http://", "ws://")
+        url = (
+            f"{ws_base}/openai/realtime"
+            f"?api-version={self.realtime_api_version}"
+            f"&deployment={self.audio_model}"
+        )
+
+        instructions = (
+            "You are a text-to-speech engine. Speak the user's message exactly as "
+            "written, verbatim, in a clear, warm, professional executive-briefing "
+            "voice. Do not answer questions, summarize, translate, omit, or add any "
+            "words of your own. Read only what is provided."
+        )
+
+        pcm = bytearray()
+        try:
+            async with websockets.connect(
+                url,
+                extra_headers={"Authorization": f"Bearer {token}"},
+                max_size=None,
+                open_timeout=20,
+            ) as ws:
+                await ws.send(json.dumps({
+                    "type": "session.update",
+                    "session": {
+                        "modalities": ["audio", "text"],
+                        "voice": voice or "alloy",
+                        "output_audio_format": "pcm16",
+                        "instructions": instructions,
+                    },
+                }))
+                await ws.send(json.dumps({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": text}],
+                    },
+                }))
+                await ws.send(json.dumps({
+                    "type": "response.create",
+                    "response": {"modalities": ["audio", "text"]},
+                }))
+
+                while True:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=60)
+                    evt = json.loads(raw)
+                    etype = evt.get("type", "")
+                    if etype in ("response.audio.delta", "response.output_audio.delta"):
+                        delta = evt.get("delta")
+                        if delta:
+                            pcm.extend(base64.b64decode(delta))
+                    elif etype in ("response.done", "response.audio.done",
+                                   "response.output_audio.done"):
+                        if etype == "response.done":
+                            break
+                    elif etype == "error":
+                        msg = evt.get("error", {}).get("message", "realtime error")
+                        raise RuntimeError(msg)
+        except Exception as e:
+            raise RuntimeError(f"Speech synthesis failed: {e}")
+
+        if not pcm:
+            raise RuntimeError("No audio was returned by the model.")
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(24000)
+            wf.writeframes(bytes(pcm))
+        return buf.getvalue()
+
 
     async def initialize(self):
         """Verify connection is working."""

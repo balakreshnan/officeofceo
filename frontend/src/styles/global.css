@@ -1777,3 +1777,9 @@ body {
 /* Document tab visual insights panel */
 .doc-visuals-panel { margin: 0 0 12px; border: 1px solid var(--border-color, #e2e8f0); border-radius: 10px; overflow: hidden; background: var(--bg-secondary, #fff); }
 .doc-visuals-panel .chat-charts { border: none; border-radius: 0; }
+
+/* Voice read-out buttons */
+.agent-card-speak { margin-left: 6px; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: none; background: transparent; color: var(--text-muted, #94a3b8); border-radius: 6px; cursor: pointer; transition: background .15s, color .15s; }
+.agent-card-speak:hover { background: var(--bg-tertiary, #f1f5f9); color: var(--accent-primary, #6366f1); }
+.agent-card-speak.active { color: var(--accent-primary, #6366f1); }
+.doc-action-btn.speaking { color: var(--accent-primary, #6366f1); border-color: var(--accent-primary, #6366f1); }

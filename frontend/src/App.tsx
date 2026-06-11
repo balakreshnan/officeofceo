@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { Session, SessionSummary, ChatMessage, StreamEvent, TokenUsage } from './types';
 import { useStreamingChat } from './hooks/useStreamingChat';
 import { useVoiceInput } from './hooks/useVoiceInput';
+import { useSpeech } from './hooks/useSpeech';
 import { useIdentity } from './hooks/useIdentity';
 import IdentityModal from './components/IdentityModal';
 import CollaborationPanel from './components/CollaborationPanel';
@@ -50,6 +51,8 @@ function App() {
   const { userName, setUserName, hasIdentity } = useIdentity();
 
   const { sendMessage, cancelStream, isStreaming, activeAgent } = useStreamingChat();
+
+  const { speak, speakingId, loadingId: speakLoadingId } = useSpeech();
 
   const handleVoiceResult = useCallback((text: string) => {
     setInput(prev => prev + text);
@@ -491,6 +494,9 @@ function App() {
               session={activeSession}
               userName={userName}
               scorecard={scorecardData}
+              onSpeak={speak}
+              speakingId={speakingId}
+              speakLoadingId={speakLoadingId}
               onChange={(s) => setActiveSession(s)}
             />
           ) : (
@@ -896,6 +902,9 @@ function App() {
                     };
                   });
                 }}
+                onSpeak={speak}
+                speakingId={speakingId}
+                loadingId={speakLoadingId}
               />
             ))}
             {scorecardData && (

@@ -113,6 +113,11 @@ class RephraseRequest(BaseModel):
     tone: Optional[str] = ""
 
 
+class TTSRequest(BaseModel):
+    text: str
+    voice: Optional[str] = "alloy"
+
+
 class StreamEvent(BaseModel):
     type: str  # "agent_started", "token", "agent_completed", "error", "usage", "done"
     agent: Optional[str] = None

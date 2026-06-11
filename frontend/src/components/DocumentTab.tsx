@@ -4,7 +4,7 @@ import {
   Bold, Heading1, Heading2, List, ListOrdered, Quote, Save,
   Download, FileText, Sparkles, ClipboardList, Loader2, CheckCircle2,
   AlertCircle, TrendingUp, Eye, Pencil, Wand2, X, RefreshCw,
-  ChevronDown, ChevronRight, BarChart3,
+  ChevronDown, ChevronRight, BarChart3, Volume2, Square,
 } from 'lucide-react';
 import { Session, DraftEvaluation } from '../types';
 import ChatCharts from './ChatCharts';
@@ -13,12 +13,15 @@ interface Props {
   session: Session;
   userName: string;
   scorecard?: any;
+  onSpeak: (text: string, id: string) => void;
+  speakingId: string | null;
+  speakLoadingId: string | null;
   onChange: (session: Session) => void;
 }
 
 type ViewMode = 'split' | 'edit' | 'preview';
 
-export default function DocumentTab({ session, userName, scorecard, onChange }: Props) {
+export default function DocumentTab({ session, userName, scorecard, onSpeak, speakingId, speakLoadingId, onChange }: Props) {
   const [content, setContent] = useState(session.draft?.content || '');
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -139,6 +142,20 @@ export default function DocumentTab({ session, userName, scorecard, onChange }: 
     update(next);
     setRephraseOpen(false);
     setSelRange(null);
+  }
+
+  const DOC_SPEAK_ID = `doc-${session.id}`;
+  function readAloud() {
+    const plain = content
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+      .replace(/[*_>#|]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (plain) onSpeak(plain, DOC_SPEAK_ID);
   }
 
   function scorecardToMarkdown(sc: any): string {
@@ -273,6 +290,17 @@ export default function DocumentTab({ session, userName, scorecard, onChange }: 
           </button>
           <button className="doc-action-btn" onClick={downloadWord} title="Export as Word document">
             <FileText size={14} /> Word
+          </button>
+          <button
+            className={`doc-action-btn ${speakingId === DOC_SPEAK_ID ? 'speaking' : ''}`}
+            onClick={readAloud}
+            disabled={!content.trim() || speakLoadingId === DOC_SPEAK_ID}
+            title={speakingId === DOC_SPEAK_ID ? 'Stop reading' : 'Read the document aloud'}
+          >
+            {speakLoadingId === DOC_SPEAK_ID ? <Loader2 size={14} className="spin" />
+              : speakingId === DOC_SPEAK_ID ? <Square size={14} />
+              : <Volume2 size={14} />}
+            {speakingId === DOC_SPEAK_ID ? 'Stop' : 'Read aloud'}
           </button>
           <button className="doc-action-btn eval" onClick={runEvaluation} disabled={evaluating || !content.trim()} title="Score the draft against the executive rubric">
             {evaluating ? <Loader2 size={14} className="spin" /> : <ClipboardList size={14} />} Evaluate
