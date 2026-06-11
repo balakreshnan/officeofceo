@@ -40,6 +40,8 @@ function App() {
   const [watermelonRevealed, setWatermelonRevealed] = useState(false);
   const [watermelonData, setWatermelonData] = useState<any>(null);
   const [scorecardData, setScorecardData] = useState<any>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const graphContainerRef = useRef<HTMLDivElement>(null);
@@ -96,6 +98,28 @@ function App() {
       const data = await res.json();
       await fetchSessions();
       await loadSession(data.id);
+      // Immediately prompt for a name via inline rename
+      startRename(data.id, data.title);
+    } catch { /* no-op */ }
+  }
+
+  function startRename(sessionId: string, currentTitle: string) {
+    setRenamingId(sessionId);
+    setRenameValue(currentTitle === 'New Session' ? '' : currentTitle);
+  }
+
+  async function commitRename(sessionId: string) {
+    const title = renameValue.trim();
+    setRenamingId(null);
+    if (!title) return;
+    try {
+      await fetch(`/api/sessions/${sessionId}/title`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title }),
+      });
+      setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, title } : s));
+      setActiveSession(prev => prev && prev.id === sessionId ? { ...prev, title } : prev);
     } catch { /* no-op */ }
   }
 
@@ -325,12 +349,35 @@ function App() {
               <div
                 key={s.id}
                 className={`session-item ${activeSession?.id === s.id ? 'active' : ''}`}
-                onClick={() => loadSession(s.id)}
+                onClick={() => { if (renamingId !== s.id) loadSession(s.id); }}
               >
-                <div className="session-item-title">
-                  <MessageSquare size={12} style={{ marginRight: 6, opacity: 0.5 }} />
-                  {s.title}
-                </div>
+                {renamingId === s.id ? (
+                  <input
+                    className="session-rename-input"
+                    value={renameValue}
+                    autoFocus
+                    placeholder="Name this session…"
+                    onClick={e => e.stopPropagation()}
+                    onChange={e => setRenameValue(e.target.value)}
+                    onBlur={() => commitRename(s.id)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') commitRename(s.id);
+                      if (e.key === 'Escape') setRenamingId(null);
+                    }}
+                  />
+                ) : (
+                  <div className="session-item-title">
+                    <MessageSquare size={12} style={{ marginRight: 6, opacity: 0.5, flexShrink: 0 }} />
+                    <span className="session-item-name">{s.title}</span>
+                    <button
+                      className="session-rename-btn"
+                      title="Rename session"
+                      onClick={e => { e.stopPropagation(); startRename(s.id, s.title); }}
+                    >
+                      <Edit3 size={12} />
+                    </button>
+                  </div>
+                )}
                 <div className="session-item-meta">
                   {s.message_count} messages • {s.token_usage.total_tokens.toLocaleString()} tokens
                   {s.collaborator_count > 0 && <span className="session-tag">👥 {s.collaborator_count}</span>}
@@ -348,7 +395,16 @@ function App() {
         <header className="chat-header">
           <div className="chat-header-left">
             <div className="chat-header-title">
-              {activeSession ? activeSession.title : 'Office of CEO - Insights Builder'}
+              {activeSession ? (
+                <button
+                  className="header-title-btn"
+                  title="Rename session"
+                  onClick={() => startRename(activeSession.id, activeSession.title)}
+                >
+                  {activeSession.title}
+                  <Edit3 size={13} className="header-title-edit" />
+                </button>
+              ) : 'Office of CEO - Insights Builder'}
             </div>
             <div className="tab-bar">
               <button

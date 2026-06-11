@@ -441,8 +441,8 @@ async def stream_chat(req: SendMessageRequest):
     session.messages.append(user_message)
     session.updated_at = datetime.utcnow()
 
-    # Auto-title from first message
-    if len(session.messages) == 1:
+    # Auto-title from first message only when the user hasn't named the session
+    if len(session.messages) == 1 and (not session.title or session.title == "New Session"):
         session.title = req.content[:50] + ("..." if len(req.content) > 50 else "")
 
     # Build conversation history for agents

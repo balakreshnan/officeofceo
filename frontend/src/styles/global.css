@@ -158,7 +158,63 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
 }
+
+.session-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.session-rename-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  margin-left: 4px;
+  opacity: 0;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  transition: var(--transition);
+}
+.session-item:hover .session-rename-btn { opacity: 0.7; }
+.session-rename-btn:hover { opacity: 1; color: var(--text-primary); }
+
+.session-rename-input {
+  width: 100%;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 4px 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.header-title-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  transition: var(--transition);
+}
+.header-title-btn:hover { background: var(--bg-tertiary); }
+.header-title-edit { opacity: 0; color: var(--text-muted); }
+.header-title-btn:hover .header-title-edit { opacity: 0.8; }
 
 .session-item-meta {
   font-size: 11px;
