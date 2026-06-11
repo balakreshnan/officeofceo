@@ -184,6 +184,7 @@ body {
 }
 .session-item:hover .session-rename-btn { opacity: 0.7; }
 .session-rename-btn:hover { opacity: 1; color: var(--text-primary); }
+.session-delete-btn:hover { color: var(--error); }
 
 .session-rename-input {
   width: 100%;

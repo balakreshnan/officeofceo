@@ -8,7 +8,7 @@ import CollaborationPanel from './components/CollaborationPanel';
 import DocumentTab from './components/DocumentTab';
 import ChatCharts from './components/ChatCharts';
 import ReactMarkdown from 'react-markdown';
-import { Send, Mic, MicOff, Plus, MessageSquare, Zap, X, Edit3, Check, RotateCcw, GitBranch, AlertTriangle, BarChart3, FileText } from 'lucide-react';
+import { Send, Mic, MicOff, Plus, MessageSquare, Zap, X, Edit3, Check, RotateCcw, GitBranch, AlertTriangle, BarChart3, FileText, Trash2 } from 'lucide-react';
 import ForceGraph2D from 'react-force-graph-2d';
 
 interface GraphNode {
@@ -121,6 +121,21 @@ function App() {
       });
       setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, title } : s));
       setActiveSession(prev => prev && prev.id === sessionId ? { ...prev, title } : prev);
+    } catch { /* no-op */ }
+  }
+
+  async function deleteSession(sessionId: string, title: string) {
+    if (!window.confirm(`Delete session "${title || 'Untitled'}"? This cannot be undone.`)) return;
+    try {
+      await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+      setSessions(prev => prev.filter(s => s.id !== sessionId));
+      if (activeSession?.id === sessionId) {
+        setActiveSession(null);
+        setScorecardData(null);
+        setWatermelonData(null);
+        setGraphData(null);
+        setWatermelonRevealed(false);
+      }
     } catch { /* no-op */ }
   }
 
@@ -381,6 +396,13 @@ function App() {
                       onClick={e => { e.stopPropagation(); startRename(s.id, s.title); }}
                     >
                       <Edit3 size={12} />
+                    </button>
+                    <button
+                      className="session-rename-btn session-delete-btn"
+                      title="Delete session"
+                      onClick={e => { e.stopPropagation(); deleteSession(s.id, s.title); }}
+                    >
+                      <Trash2 size={12} />
                     </button>
                   </div>
                 )}
