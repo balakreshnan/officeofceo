@@ -23,11 +23,15 @@ class AgentOrchestrator:
         self.insights_name = os.getenv("INSIGHTS_AGENT_NAME", "oceo-insights")
         self.model_deployment = os.getenv("AZURE_AI_MODEL_DEPLOYMENT", "gpt-5.4-mini")
         self.openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+        self.responses_api_version = os.getenv(
+            "AZURE_OPENAI_RESPONSES_API_VERSION", "2025-04-01-preview"
+        )
         # Base resource endpoint (strip the /api/projects/... suffix used for agents)
         self.resource_endpoint = self.endpoint.split("/api/projects/")[0] if self.endpoint else ""
         self.client = None  # kept for health check compatibility
         self.credential = None
         self._token = None
+        self._openai_client = None  # lazily-built AzureOpenAI client (Responses API)
 
         try:
             tenant_id = os.getenv("AZURE_TENANT_ID", "")
@@ -51,17 +55,36 @@ class AgentOrchestrator:
         self._token = self.credential.get_token("https://ai.azure.com/.default").token
         return self._token
 
-    def _get_cognitive_token(self) -> str:
-        """Bearer token for the Cognitive Services data plane (model inference)."""
-        return self.credential.get_token(
-            "https://cognitiveservices.azure.com/.default"
-        ).token
+    def _get_openai_client(self):
+        """Lazily build an AzureOpenAI client for the Responses API.
+
+        Authenticates with DefaultAzureCredential via a bearer-token provider
+        scoped to the Cognitive Services data plane
+        (https://cognitiveservices.azure.com/.default).
+        """
+        if self._openai_client is not None:
+            return self._openai_client
+
+        from openai import AzureOpenAI
+        from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+
+        token_provider = get_bearer_token_provider(
+            DefaultAzureCredential(),
+            "https://cognitiveservices.azure.com/.default",
+        )
+        self._openai_client = AzureOpenAI(
+            azure_endpoint=self.resource_endpoint,
+            azure_ad_token_provider=token_provider,
+            api_version=self.responses_api_version,
+        )
+        return self._openai_client
 
     def rephrase_text(self, text: str, instruction: str = "", tone: str = "") -> dict:
-        """Rephrase selected text using a direct GPT model deployment.
+        """Rephrase selected text using the OpenAI Responses API SDK.
 
-        Returns {"text": <rephrased>, "usage": {...}}. Falls back to a light
-        heuristic when no model connection is available.
+        Calls the gpt model deployment via client.responses.create(). Returns
+        {"text": <rephrased>, "usage": {...}}. Falls back to a light heuristic
+        when no model connection is available.
         """
         text = (text or "").strip()
         if not text:
@@ -85,38 +108,25 @@ class AgentOrchestrator:
             user_content = f"Instruction: {instruction}\n\nText:\n{text}"
 
         try:
-            token = self._get_cognitive_token()
-            url = (
-                f"{self.resource_endpoint}/openai/deployments/{self.model_deployment}"
-                f"/chat/completions?api-version={self.openai_api_version}"
+            client = self._get_openai_client()
+            resp = client.responses.create(
+                model=self.model_deployment,
+                instructions=system_prompt,
+                input=user_content,
+                temperature=0.5,
             )
-            resp = requests.post(
-                url,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_content},
-                    ],
-                    "temperature": 0.5,
-                },
-                timeout=60,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            rephrased = data["choices"][0]["message"]["content"].strip()
+            rephrased = (resp.output_text or "").strip()
             # Strip surrounding quotes the model sometimes adds
             if len(rephrased) >= 2 and rephrased[0] in '"“' and rephrased[-1] in '"”':
                 rephrased = rephrased[1:-1].strip()
-            u = data.get("usage", {})
-            usage = TokenUsage(
-                prompt_tokens=u.get("prompt_tokens", 0),
-                completion_tokens=u.get("completion_tokens", 0),
-                total_tokens=u.get("total_tokens", 0),
-            )
+
+            usage = TokenUsage()
+            if resp.usage is not None:
+                usage = TokenUsage(
+                    prompt_tokens=getattr(resp.usage, "input_tokens", 0) or 0,
+                    completion_tokens=getattr(resp.usage, "output_tokens", 0) or 0,
+                    total_tokens=getattr(resp.usage, "total_tokens", 0) or 0,
+                )
             return {"text": rephrased, "usage": usage.model_dump()}
         except Exception as e:
             print(f"Warning: rephrase failed, using fallback - {e}")
