@@ -490,6 +490,7 @@ function App() {
             <DocumentTab
               session={activeSession}
               userName={userName}
+              scorecard={scorecardData}
               onChange={(s) => setActiveSession(s)}
             />
           ) : (

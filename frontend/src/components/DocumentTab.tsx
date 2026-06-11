@@ -4,19 +4,21 @@ import {
   Bold, Heading1, Heading2, List, ListOrdered, Quote, Save,
   Download, FileText, Sparkles, ClipboardList, Loader2, CheckCircle2,
   AlertCircle, TrendingUp, Eye, Pencil, Wand2, X, RefreshCw,
-  ChevronDown, ChevronRight,
+  ChevronDown, ChevronRight, BarChart3,
 } from 'lucide-react';
 import { Session, DraftEvaluation } from '../types';
+import ChatCharts from './ChatCharts';
 
 interface Props {
   session: Session;
   userName: string;
+  scorecard?: any;
   onChange: (session: Session) => void;
 }
 
 type ViewMode = 'split' | 'edit' | 'preview';
 
-export default function DocumentTab({ session, userName, onChange }: Props) {
+export default function DocumentTab({ session, userName, scorecard, onChange }: Props) {
   const [content, setContent] = useState(session.draft?.content || '');
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -139,19 +141,56 @@ export default function DocumentTab({ session, userName, onChange }: Props) {
     setSelRange(null);
   }
 
-  function pullFromInsights() {
+  function scorecardToMarkdown(sc: any): string {
+    if (!sc) return '';
+    const fmtMoney = (v: any) => {
+      const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
+      if (isNaN(n) || n === 0) return null;
+      return n >= 1e9 ? `$${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `$${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `$${(n / 1e3).toFixed(0)}K` : `$${n}`;
+    };
+    const has = (v: any) => v !== null && v !== undefined && v !== '' && v !== 0 && String(v).toLowerCase() !== 'n/a';
+    const rows: [string, string][] = [];
+    if (has(sc.health_score)) rows.push(['Account Health', `${sc.health_score} / 100${sc.health_status ? ` (${sc.health_status})` : ''}`]);
+    const rev = fmtMoney(sc.revenue);
+    if (rev) rows.push(['Revenue (YTD)', `${rev}${has(sc.revenue_growth) ? ` (${sc.revenue_growth})` : ''}`]);
+    if (has(sc.margin)) rows.push(['Margin', String(sc.margin)]);
+    const pipe = fmtMoney(sc.pipeline_value);
+    if (pipe) rows.push(['Open Pipeline', `${pipe}${has(sc.deal_count) ? ` (${sc.deal_count} deals)` : ''}`]);
+    if (has(sc.csat)) rows.push(['CSAT', `${sc.csat}${has(sc.csat_prior) ? ` (prior ${sc.csat_prior})` : ''}`]);
+    if (has(sc.nps)) rows.push(['NPS', String(sc.nps)]);
+    if (has(sc.qoq_growth)) rows.push(['QoQ Consumption Growth', String(sc.qoq_growth)]);
+    if (has(sc.active_seats)) rows.push(['Active Seats', String(sc.active_seats)]);
+    if (has(sc.open_p1)) rows.push(['Open P1 Incidents', String(sc.open_p1)]);
+    if (has(sc.renewal_status)) rows.push(['Renewal Status', String(sc.renewal_status)]);
+    if (rows.length === 0) return '';
+    const title = sc.account_name && sc.account_name !== 'Unknown Account' ? ` — ${sc.account_name}` : '';
+    let md = `## 📊 Account Scorecard${title}\n\n| Metric | Value |\n| --- | --- |\n`;
+    for (const [k, v] of rows) md += `| ${k} | ${v} |\n`;
+    return md;
+  }
+
+  function pullVisuals() {
+    const md = scorecardToMarkdown(scorecard);
+    if (!md) return;
+    const merged = content.trim() ? `${content.trim()}\n\n${md}` : md;
+    update(merged);
+  }
+
+  function pullInsightsAndVisuals() {
     const insightMsgs = session.messages.filter(
       m => m.role === 'assistant' && m.agent === 'insights' && m.content.trim()
     );
     const source = insightMsgs.length > 0
       ? insightMsgs
       : session.messages.filter(m => m.role === 'assistant' && m.content.trim());
-    if (source.length === 0) return;
-    const latest = source[source.length - 1].content;
+    const latest = source.length > 0 ? source[source.length - 1].content : '';
+    const visuals = scorecardToMarkdown(scorecard);
+    if (!latest && !visuals) return;
     const heading = `# ${session.title || 'Executive Briefing'}\n\n`;
+    const blocks = [latest, visuals].filter(Boolean).join('\n\n');
     const merged = content.trim()
-      ? `${content.trim()}\n\n---\n\n${latest}`
-      : heading + latest;
+      ? `${content.trim()}\n\n---\n\n${blocks}`
+      : heading + blocks;
     update(merged);
   }
 
@@ -223,8 +262,11 @@ export default function DocumentTab({ session, userName, onChange }: Props) {
         </div>
 
         <div className="doc-toolbar-group doc-toolbar-actions">
-          <button className="doc-action-btn primary" onClick={pullFromInsights} title="Pull latest insights into the draft">
-            <Sparkles size={14} /> Pull from insights
+          <button className="doc-action-btn primary" onClick={pullInsightsAndVisuals} title="Pull the latest insights and scorecard visuals into the draft">
+            <Sparkles size={14} /> Pull insights + visuals
+          </button>
+          <button className="doc-action-btn" onClick={pullVisuals} disabled={!scorecard} title="Pull only the scorecard metrics table into the draft">
+            <BarChart3 size={14} /> Pull visuals
           </button>
           <button className="doc-action-btn" onClick={downloadMarkdown} title="Export as Markdown">
             <Download size={14} /> Markdown
@@ -256,6 +298,13 @@ export default function DocumentTab({ session, userName, onChange }: Props) {
           <Save size={12} /> Save now
         </button>
       </div>
+
+      {/* Visual insights from chat */}
+      {scorecard && (
+        <div className="doc-visuals-panel">
+          <ChatCharts scorecard={scorecard} />
+        </div>
+      )}
 
       {/* Editor + Preview */}
       <div className={`doc-workspace view-${view}`}>
