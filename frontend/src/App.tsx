@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Session, SessionSummary, ChatMessage, StreamEvent, TokenUsage } from './types';
 import { useStreamingChat } from './hooks/useStreamingChat';
 import { useVoiceInput } from './hooks/useVoiceInput';
@@ -348,6 +348,22 @@ function App() {
   }
 
   const cumulativeTokens = activeSession?.token_usage?.cumulative?.total_tokens || 0;
+
+  // Build a stable graph object for ForceGraph2D. react-force-graph mutates
+  // link.source/target into node-object references; recomputing only when
+  // graphData changes (and normalizing source/target back to string ids)
+  // keeps node/link identities consistent so connections survive tab switches.
+  const forceGraphData = useMemo(() => {
+    if (!graphData) return { nodes: [], links: [] };
+    return {
+      nodes: graphData.nodes.map(n => ({ ...n, name: n.label })),
+      links: graphData.links.map(l => ({
+        ...l,
+        source: typeof (l as any).source === 'object' ? (l as any).source.id : l.source,
+        target: typeof (l as any).target === 'object' ? (l as any).target.id : l.target,
+      })),
+    };
+  }, [graphData]);
 
   return (
     <div className="app-layout">
@@ -792,10 +808,7 @@ function App() {
             </div>
             <div className="graph-canvas">
               <ForceGraph2D
-                graphData={{
-                  nodes: graphData.nodes.map(n => ({ ...n, name: n.label })),
-                  links: graphData.links,
-                }}
+                graphData={forceGraphData}
                 nodeLabel={(node: any) => `${node.label}\n${node.details || ''}`}
                 nodeColor={(node: any) => {
                   const colors: Record<string, string> = {
