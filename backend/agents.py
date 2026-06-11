@@ -561,6 +561,29 @@ class AgentOrchestrator:
         except (json.JSONDecodeError, TypeError, ValueError):
             return f"Context gathered ({len(raw_json)} chars). Generating insights...\n"
 
+    def _section(self, data: dict, *names: str) -> dict:
+        """Locate a context sub-section regardless of the agent's schema variant.
+
+        The context-builder sometimes nests data under ``context.<name>`` and
+        other times returns it at the top level as ``<name>`` or ``get<Name>``
+        (e.g. ``getFinancials``, ``getRisk``). Try all variants.
+        """
+        ctx = data.get("context", {})
+        if not isinstance(ctx, dict):
+            ctx = {}
+        for name in names:
+            section = ctx.get(name)
+            if isinstance(section, dict) and section:
+                return section
+            section = data.get(name)
+            if isinstance(section, dict) and section:
+                return section
+            get_key = "get" + "".join(p.capitalize() for p in name.split("_"))
+            section = data.get(get_key)
+            if isinstance(section, dict) and section:
+                return section
+        return {}
+
     def _extract_graph(self, raw_json: str) -> dict:
         """Extract knowledge graph nodes and links from context-builder JSON."""
         try:
@@ -598,27 +621,27 @@ class AgentOrchestrator:
         context = data.get("context", {})
 
         # Financials
-        fin = context.get("financials", {})
+        fin = self._section(data, "financials")
         if fin:
-            revenue = fin.get("annual_revenue") or fin.get("revenue", "")
+            revenue = fin.get("ytd_revenue_usd") or fin.get("annual_revenue") or fin.get("revenue", "")
             add_node("financials", "Financials", "data", f"Revenue: {revenue}")
             links.append({"source": "account", "target": "financials", "label": "financials"})
 
         # Telemetry / usage
-        tel = context.get("telemetry", {})
+        tel = self._section(data, "telemetry")
         if tel:
             add_node("telemetry", "Usage & Telemetry", "data", str(tel.get("summary", ""))[:100])
             links.append({"source": "account", "target": "telemetry", "label": "telemetry"})
 
         # Risk
-        risk = context.get("risk", {})
+        risk = self._section(data, "risk")
         if risk:
             sentiment = risk.get("system_sentiment") or risk.get("overall_risk", "")
             add_node("risk", "Risk Profile", "risk", f"Sentiment: {sentiment}")
             links.append({"source": "account", "target": "risk", "label": "risk"})
 
         # Staffing
-        staff = context.get("staffing", {})
+        staff = self._section(data, "staffing")
         if staff:
             add_node("staffing", "Staffing", "data", "Team & resource data")
             links.append({"source": "account", "target": "staffing", "label": "staffing"})
@@ -633,7 +656,7 @@ class AgentOrchestrator:
                     links.append({"source": "staffing", "target": mid, "label": role[:20]})
 
         # Pipeline / opportunities
-        pipeline = context.get("pipeline", {})
+        pipeline = self._section(data, "pipeline")
         if pipeline:
             add_node("pipeline", "Pipeline", "opportunity", "Deals & opportunities")
             links.append({"source": "account", "target": "pipeline", "label": "pipeline"})
@@ -641,19 +664,19 @@ class AgentOrchestrator:
             for i, opp in enumerate(opps[:4]):
                 if isinstance(opp, dict):
                     name = opp.get("name", opp.get("deal_name", f"Deal {i+1}"))
-                    value = opp.get("value", opp.get("amount", ""))
+                    value = opp.get("value", opp.get("amount") or opp.get("amount_usd", ""))
                     oid = f"opp_{i}"
                     add_node(oid, name, "opportunity", f"Value: {value}")
                     links.append({"source": "pipeline", "target": oid, "label": "deal"})
 
         # Relationship history
-        rel = context.get("relationship_history", {})
+        rel = self._section(data, "relationship_history")
         if rel:
             add_node("relationship", "Relationship History", "data", "Past interactions")
             links.append({"source": "account", "target": "relationship", "label": "history"})
 
         # External context
-        ext = context.get("external_context", {})
+        ext = self._section(data, "external_context", "external")
         if ext:
             add_node("external", "External Intel", "data", "Market & industry data")
             links.append({"source": "account", "target": "external", "label": "external"})
@@ -680,11 +703,12 @@ class AgentOrchestrator:
 
         account_name = (data.get("aliases_resolved") or ["Unknown Account"])[0]
         account_code = data.get("account_code", "")
-        context = data.get("context", {})
-        fin = context.get("financials", {})
-        tel = context.get("telemetry", {})
-        risk = context.get("risk", {})
-        account_info = context.get("account", {})
+        fin = self._section(data, "financials")
+        tel = self._section(data, "telemetry")
+        risk = self._section(data, "risk")
+        account_info = self._section(data, "account")
+        if account_info.get("account_name") and (account_name == "Unknown Account"):
+            account_name = account_info.get("account_name")
 
         # System metrics (the "green" side)
         system_metrics = {
@@ -735,7 +759,7 @@ class AgentOrchestrator:
                     })
 
             # Staffing concerns
-            staffing = context.get("staffing", {})
+            staffing = self._section(data, "staffing")
             if staffing.get("open_roles") and staffing.get("key_open_role"):
                 watermelon_signals.append({
                     "severity": "amber",
@@ -796,13 +820,14 @@ class AgentOrchestrator:
 
         account_name = (data.get("aliases_resolved") or ["Unknown Account"])[0]
         account_code = data.get("account_code", "")
-        context = data.get("context", {})
-        fin = context.get("financials", {})
-        tel = context.get("telemetry", {})
-        risk = context.get("risk", {})
-        pipeline = context.get("pipeline", {})
-        account_info = context.get("account", {})
-        staffing = context.get("staffing", {})
+        fin = self._section(data, "financials")
+        tel = self._section(data, "telemetry")
+        risk = self._section(data, "risk")
+        pipeline = self._section(data, "pipeline")
+        account_info = self._section(data, "account")
+        staffing = self._section(data, "staffing")
+        if account_info.get("account_name") and account_name == "Unknown Account":
+            account_name = account_info.get("account_name")
 
         # Revenue
         revenue = fin.get("ytd_revenue_usd") or fin.get("annual_revenue") or fin.get("revenue", 0)
@@ -817,8 +842,8 @@ class AgentOrchestrator:
 
         # Pipeline
         opps = pipeline.get("opportunities") or pipeline.get("deals") or []
-        total_pipeline = sum(
-            float(o.get("value", 0) or o.get("amount", 0) or 0)
+        total_pipeline = pipeline.get("total_open_pipeline_usd") or sum(
+            float(o.get("value", 0) or o.get("amount", 0) or o.get("amount_usd", 0) or 0)
             for o in opps if isinstance(o, dict)
         )
         deal_count = len(opps)

@@ -7,8 +7,8 @@ import IdentityModal from './components/IdentityModal';
 import CollaborationPanel from './components/CollaborationPanel';
 import DocumentTab from './components/DocumentTab';
 import ChatCharts from './components/ChatCharts';
-import ReactMarkdown from 'react-markdown';
-import { Send, Mic, MicOff, Plus, MessageSquare, Zap, X, Edit3, Check, RotateCcw, GitBranch, AlertTriangle, BarChart3, FileText, Trash2 } from 'lucide-react';
+import ChatMessageCard from './components/ChatMessageCard';
+import { Send, Mic, MicOff, Plus, MessageSquare, Zap, X, Edit3, RotateCcw, GitBranch, AlertTriangle, BarChart3, FileText, Trash2 } from 'lucide-react';
 import ForceGraph2D from 'react-force-graph-2d';
 
 interface GraphNode {
@@ -872,87 +872,45 @@ function App() {
           </div>
         ) : (
           <div className="messages-container">
-            {scorecardData && <ChatCharts scorecard={scorecardData} />}
             {activeSession.messages.map(msg => (
-              <div key={msg.id} className={`message ${msg.role}`}>
-                <div className="message-avatar">
-                  {msg.role === 'user' ? 'You' : 'AI'}
-                </div>
-                <div className="message-bubble">
-                  {msg.agent && (
-                    <div className={`message-agent-badge ${msg.agent}`}>
-                      {msg.agent === 'context-builder' ? '🔍 Context Builder' : '💡 Insights'}
-                    </div>
-                  )}
-                  {editingId === msg.id ? (
-                    <div>
-                      <textarea
-                        className="edit-textarea"
-                        value={editContent}
-                        onChange={e => setEditContent(e.target.value)}
-                        autoFocus
-                      />
-                      <div className="edit-actions">
-                        <button className="edit-save" onClick={() => handleEdit(msg.id)}>
-                          <Check size={12} /> Save
-                        </button>
-                        <button className="edit-cancel" onClick={() => setEditingId(null)}>
-                          <X size={12} /> Cancel
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="message-content">
-                      <ReactMarkdown
-                        components={{
-                          a: ({ href, children }) => (
-                            <a href={href} target="_blank" rel="noopener noreferrer">
-                              {children}
-                            </a>
-                          ),
-                        }}
-                      >{msg.content}</ReactMarkdown>
-                    </div>
-                  )}
-                  {msg.role === 'assistant' && msg.content && !editingId && (
-                    <div className="message-actions">
-                      <button
-                        className="message-action-btn"
-                        onClick={() => { setEditingId(msg.id); setEditContent(msg.content); }}
-                      >
-                        <Edit3 size={10} /> Edit
-                      </button>
-                      {msg.is_edited && (
-                        <button
-                          className="message-action-btn"
-                          onClick={() => {
-                            setActiveSession(prev => {
-                              if (!prev) return null;
-                              return {
-                                ...prev,
-                                messages: prev.messages.map(m =>
-                                  m.id === msg.id && m.original_content
-                                    ? { ...m, content: m.original_content, is_edited: false }
-                                    : m
-                                ),
-                              };
-                            });
-                          }}
-                        >
-                          <RotateCcw size={10} /> Revert
-                        </button>
-                      )}
-                    </div>
-                  )}
+              <ChatMessageCard
+                key={msg.id}
+                msg={msg}
+                editingId={editingId}
+                editContent={editContent}
+                setEditContent={setEditContent}
+                onStartEdit={(m) => { setEditingId(m.id); setEditContent(m.content); }}
+                onSaveEdit={handleEdit}
+                onCancelEdit={() => setEditingId(null)}
+                onRevert={(id) => {
+                  setActiveSession(prev => {
+                    if (!prev) return null;
+                    return {
+                      ...prev,
+                      messages: prev.messages.map(m =>
+                        m.id === id && m.original_content
+                          ? { ...m, content: m.original_content, is_edited: false }
+                          : m
+                      ),
+                    };
+                  });
+                }}
+              />
+            ))}
+            {scorecardData && (
+              <div className="message assistant">
+                <div className="message-avatar">📊</div>
+                <div className="message-bubble chart-message-bubble">
+                  <ChatCharts scorecard={scorecardData} />
                 </div>
               </div>
-            ))}
+            )}
             {isStreaming && (
               <div className="streaming-indicator">
                 <div className="streaming-dot" />
                 <div className="streaming-dot" />
                 <div className="streaming-dot" />
-                <span>{activeAgent === 'context-builder' ? 'Researching context...' : activeAgent === 'insights' ? 'Generating insights...' : 'Processing...'}</span>
+                <span>{activeAgent === 'context-builder' ? 'Researching context...' : activeAgent === 'customer-data' ? 'Gathering customer data...' : activeAgent === 'insights' ? 'Generating insights...' : 'Processing...'}</span>
               </div>
             )}
             <div ref={messagesEndRef} />
