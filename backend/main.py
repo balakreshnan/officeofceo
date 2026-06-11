@@ -1,11 +1,20 @@
 """FastAPI backend for Office of CEO Insights Builder."""
 
 import os
+import sys
 import json
 import asyncio
 from datetime import datetime
 from typing import Optional
 from contextlib import asynccontextmanager
+
+# Force UTF-8 stdout/stderr so emoji/unicode in logs don't crash on Windows
+# (Windows default 'charmap' codec can't encode characters like ✓, →, ⚠).
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
