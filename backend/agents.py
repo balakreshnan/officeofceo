@@ -299,6 +299,122 @@ class AgentOrchestrator:
 
         yield {"type": "done"}
 
+    def evaluate_draft(self, draft_content: str) -> dict:
+        """Evaluate a draft document against an executive-briefing rubric.
+
+        Returns a dict with overall_score (0-100), per-criterion scores,
+        summary, strengths, and improvements. Uses the insights agent as
+        an LLM evaluator returning strict JSON.
+        """
+        rubric_criteria = [
+            "Completeness — covers account, financials, risks, pipeline, and recommendations",
+            "Clarity — concise, well-organized, easy for an executive to skim",
+            "Grounding — claims are specific and backed by data/sources, not vague",
+            "Actionability — provides clear talking points and next steps",
+            "Structure & Formatting — effective use of headings, bullets, tables",
+            "Executive Readiness — appropriate tone and strategic framing for a CEO",
+        ]
+        criteria_list = "\n".join(f"- {c}" for c in rubric_criteria)
+
+        eval_prompt = (
+            "You are a strict executive-communications evaluator. Score the DRAFT below "
+            "against this rubric. Each criterion is scored 1-5 (5 = excellent).\n\n"
+            f"## Rubric Criteria\n{criteria_list}\n\n"
+            "## DRAFT TO EVALUATE\n"
+            f"{draft_content}\n\n"
+            "## Output\n"
+            "Return ONLY a JSON object (no markdown fences, no preamble) with this exact shape:\n"
+            "{\n"
+            '  "criteria": [\n'
+            '    {"name": "Completeness", "score": <1-5>, "rationale": "<one sentence>"},\n'
+            '    {"name": "Clarity", "score": <1-5>, "rationale": "<one sentence>"},\n'
+            '    {"name": "Grounding", "score": <1-5>, "rationale": "<one sentence>"},\n'
+            '    {"name": "Actionability", "score": <1-5>, "rationale": "<one sentence>"},\n'
+            '    {"name": "Structure & Formatting", "score": <1-5>, "rationale": "<one sentence>"},\n'
+            '    {"name": "Executive Readiness", "score": <1-5>, "rationale": "<one sentence>"}\n'
+            "  ],\n"
+            '  "summary": "<2-3 sentence overall assessment>",\n'
+            '  "strengths": ["<strength>", "<strength>"],\n'
+            '  "improvements": ["<improvement>", "<improvement>"]\n'
+            "}"
+        )
+
+        if not self.client:
+            return self._demo_evaluation(draft_content)
+
+        content, _usage, _sources = self._collect_agent_response(
+            self.insights_name, eval_prompt
+        )
+
+        try:
+            data = self._parse_json(content)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return self._demo_evaluation(draft_content)
+
+        criteria = []
+        total = 0.0
+        count = 0
+        for c in data.get("criteria", []):
+            try:
+                score = float(c.get("score", 0))
+            except (TypeError, ValueError):
+                score = 0.0
+            score = max(0.0, min(5.0, score))
+            criteria.append({
+                "name": c.get("name", "Criterion"),
+                "score": score,
+                "max_score": 5.0,
+                "rationale": c.get("rationale", ""),
+            })
+            total += score
+            count += 1
+
+        overall = round((total / (count * 5.0)) * 100, 1) if count else 0.0
+
+        return {
+            "overall_score": overall,
+            "criteria": criteria,
+            "summary": data.get("summary", ""),
+            "strengths": data.get("strengths", []),
+            "improvements": data.get("improvements", []),
+        }
+
+    def _demo_evaluation(self, draft_content: str) -> dict:
+        """Heuristic fallback evaluation when no agent is available."""
+        text = draft_content or ""
+        length = len(text)
+        has_headers = "#" in text
+        has_bullets = ("- " in text) or ("* " in text)
+        has_tables = "|" in text
+        has_numbers = any(ch.isdigit() for ch in text)
+
+        def clamp(v):
+            return max(1.0, min(5.0, v))
+
+        criteria = [
+            {"name": "Completeness", "score": clamp(2 + length / 600), "max_score": 5.0,
+             "rationale": "Estimated from draft length and section coverage."},
+            {"name": "Clarity", "score": clamp(3 + (1 if has_headers else 0)), "max_score": 5.0,
+             "rationale": "Headings improve skimmability." if has_headers else "Add headings to improve clarity."},
+            {"name": "Grounding", "score": clamp(2 + (2 if has_numbers else 0)), "max_score": 5.0,
+             "rationale": "Specific figures present." if has_numbers else "Add concrete data points."},
+            {"name": "Actionability", "score": clamp(3 + (1 if has_bullets else 0)), "max_score": 5.0,
+             "rationale": "Bulleted actions detected." if has_bullets else "Add clear next steps."},
+            {"name": "Structure & Formatting", "score": clamp(2 + (1 if has_headers else 0) + (1 if has_tables else 0)), "max_score": 5.0,
+             "rationale": "Tables/headings aid structure." if (has_tables or has_headers) else "Use headings and tables."},
+            {"name": "Executive Readiness", "score": clamp(3), "max_score": 5.0,
+             "rationale": "Heuristic baseline (agent offline)."},
+        ]
+        total = sum(c["score"] for c in criteria)
+        overall = round((total / (len(criteria) * 5.0)) * 100, 1)
+        return {
+            "overall_score": overall,
+            "criteria": criteria,
+            "summary": "Heuristic evaluation (AI evaluator offline). Connect Azure for a full rubric review.",
+            "strengths": ["Draft captured" if length else "No content yet"],
+            "improvements": ["Add data-backed specifics", "Ensure clear next steps and tables"],
+        }
+
     def _parse_json(self, raw: str) -> dict:
         """Parse JSON from agent output, handling markdown code fences."""
         import re

@@ -2,8 +2,12 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { Session, SessionSummary, ChatMessage, StreamEvent, TokenUsage } from './types';
 import { useStreamingChat } from './hooks/useStreamingChat';
 import { useVoiceInput } from './hooks/useVoiceInput';
+import { useIdentity } from './hooks/useIdentity';
+import IdentityModal from './components/IdentityModal';
+import CollaborationPanel from './components/CollaborationPanel';
+import DocumentTab from './components/DocumentTab';
 import ReactMarkdown from 'react-markdown';
-import { Send, Mic, MicOff, Plus, MessageSquare, Zap, X, Edit3, Check, RotateCcw, GitBranch, AlertTriangle, BarChart3 } from 'lucide-react';
+import { Send, Mic, MicOff, Plus, MessageSquare, Zap, X, Edit3, Check, RotateCcw, GitBranch, AlertTriangle, BarChart3, FileText } from 'lucide-react';
 import ForceGraph2D from 'react-force-graph-2d';
 
 interface GraphNode {
@@ -31,7 +35,7 @@ function App() {
   const [input, setInput] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
-  const [activeTab, setActiveTab] = useState<'chat' | 'graph' | 'watermelon' | 'scorecard'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'graph' | 'watermelon' | 'scorecard' | 'document'>('chat');
   const [graphData, setGraphData] = useState<GraphData | null>(null);
   const [watermelonRevealed, setWatermelonRevealed] = useState(false);
   const [watermelonData, setWatermelonData] = useState<any>(null);
@@ -39,6 +43,8 @@ function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const graphContainerRef = useRef<HTMLDivElement>(null);
+
+  const { userName, setUserName, hasIdentity } = useIdentity();
 
   const { sendMessage, cancelStream, isStreaming, activeAgent } = useStreamingChat();
 
@@ -51,6 +57,12 @@ function App() {
   // Load sessions
   useEffect(() => {
     fetchSessions();
+    // Deep-link: open a shared session via ?session=<id>
+    const params = new URLSearchParams(window.location.search);
+    const shared = params.get('session');
+    if (shared) {
+      loadSession(shared);
+    }
   }, []);
 
   // Auto-scroll
@@ -115,6 +127,10 @@ function App() {
           insights: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
           cumulative: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
         },
+        collaborators: [],
+        assignee: null,
+        draft: { content: '', updated_at: new Date().toISOString(), updated_by: null },
+        evaluation: null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -252,6 +268,7 @@ function App() {
           message_id: messageId,
           session_id: activeSession.id,
           new_content: editContent,
+          user_name: userName,
         }),
       });
       if (res.ok) {
@@ -260,7 +277,7 @@ function App() {
           return {
             ...prev,
             messages: prev.messages.map(m =>
-              m.id === messageId ? { ...m, content: editContent, is_edited: true } : m
+              m.id === messageId ? { ...m, content: editContent, is_edited: true, edited_by: userName } : m
             ),
           };
         });
@@ -316,6 +333,8 @@ function App() {
                 </div>
                 <div className="session-item-meta">
                   {s.message_count} messages • {s.token_usage.total_tokens.toLocaleString()} tokens
+                  {s.collaborator_count > 0 && <span className="session-tag">👥 {s.collaborator_count}</span>}
+                  {s.has_draft && <span className="session-tag">📝 draft</span>}
                 </div>
               </div>
             ))
@@ -358,16 +377,45 @@ function App() {
               >
                 <BarChart3 size={14} /> Scorecard
               </button>
+              <button
+                className={`tab-btn ${activeTab === 'document' ? 'active' : ''}`}
+                onClick={() => setActiveTab('document')}
+              >
+                <FileText size={14} /> Document
+                {activeSession?.draft?.content?.trim() && <span className="tab-badge">✓</span>}
+              </button>
             </div>
           </div>
-          <div className="token-counter">
-            <Zap size={14} />
-            Session Tokens: <span className="token-value">{cumulativeTokens.toLocaleString()}</span>
+          <div className="chat-header-right">
+            {activeSession && (
+              <CollaborationPanel
+                session={activeSession}
+                onChange={(s) => { setActiveSession(s); fetchSessions(); }}
+              />
+            )}
+            <div className="token-counter">
+              <Zap size={14} />
+              Session Tokens: <span className="token-value">{cumulativeTokens.toLocaleString()}</span>
+            </div>
           </div>
         </header>
 
         {/* Tab Content */}
-        {activeTab === 'scorecard' ? (
+        {activeTab === 'document' ? (
+          activeSession ? (
+            <DocumentTab
+              session={activeSession}
+              userName={userName}
+              onChange={(s) => setActiveSession(s)}
+            />
+          ) : (
+            <div className="welcome-screen">
+              <div className="welcome-icon">📝</div>
+              <h2>Document Editor</h2>
+              <p>Start or open a session, then pull your insights into the editor to craft a final briefing.</p>
+            </div>
+          )
+        ) : activeTab === 'scorecard' ? (
           <div className="scorecard-container">
             <div className="scorecard-header">
               <h2>📊 Executive Account Scorecard</h2>
@@ -829,6 +877,7 @@ function App() {
         )}
 
         {/* Input Area */}
+        {activeTab !== 'document' && (
         <div className="input-area">
           <div className="input-wrapper">
             <textarea
@@ -866,7 +915,9 @@ function App() {
             )}
           </div>
         </div>
+        )}
       </main>
+      {!hasIdentity && <IdentityModal onSubmit={setUserName} />}
     </div>
   );
 }

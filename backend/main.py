@@ -26,18 +26,145 @@ from models import (
     ChatMessage,
     TokenUsage,
     SessionTokenUsage,
+    Collaborator,
+    DraftDocument,
+    DraftEvaluation,
+    RubricCriterion,
     CreateSessionRequest,
     SendMessageRequest,
     EditMessageRequest,
+    AddCollaboratorRequest,
+    AssignRequest,
+    SaveDraftRequest,
+    EvaluateDraftRequest,
     StreamEvent,
 )
 from agents import AgentOrchestrator
+from fastapi.responses import StreamingResponse, Response
+import io
 
 load_dotenv()
 
 # In-memory session store
 sessions: dict[str, Session] = {}
 orchestrator: Optional[AgentOrchestrator] = None
+
+
+def _safe_filename(title: str) -> str:
+    """Sanitize a session title into a safe filename stem."""
+    import re
+    stem = re.sub(r"[^\w\- ]", "", title or "document").strip().replace(" ", "_")
+    return stem[:60] or "document"
+
+
+def _markdown_to_docx(markdown: str, title: str) -> "io.BytesIO":
+    """Convert markdown content into a .docx document (in-memory buffer).
+
+    Handles headings (#..######), bullet lists (-/*), numbered lists,
+    simple pipe tables, bold (**text**), and paragraphs.
+    """
+    from docx import Document
+    from docx.shared import Pt, RGBColor
+    import re
+
+    doc = Document()
+
+    def add_runs_with_bold(paragraph, text):
+        # Split on **bold** segments and add runs accordingly
+        parts = re.split(r"(\*\*[^*]+\*\*)", text)
+        for part in parts:
+            if part.startswith("**") and part.endswith("**") and len(part) > 4:
+                run = paragraph.add_run(part[2:-2])
+                run.bold = True
+            elif part:
+                paragraph.add_run(part)
+
+    lines = (markdown or "").split("\n")
+    i = 0
+    table_buffer = []
+
+    def flush_table():
+        nonlocal table_buffer
+        if not table_buffer:
+            return
+        # Parse pipe table rows
+        rows = []
+        for raw in table_buffer:
+            cells = [c.strip() for c in raw.strip().strip("|").split("|")]
+            rows.append(cells)
+        # Drop separator rows like |---|---|
+        rows = [r for r in rows if not all(set(c) <= set("-: ") for c in r)]
+        if rows:
+            ncols = max(len(r) for r in rows)
+            table = doc.add_table(rows=0, cols=ncols)
+            table.style = "Light Grid Accent 1"
+            for r_idx, r in enumerate(rows):
+                cells = table.add_row().cells
+                for c_idx in range(ncols):
+                    val = r[c_idx] if c_idx < len(r) else ""
+                    cells[c_idx].text = val.replace("**", "")
+        table_buffer = []
+
+    while i < len(lines):
+        line = lines[i].rstrip()
+        stripped = line.strip()
+
+        # Table detection (line contains pipes and looks like a row)
+        if stripped.startswith("|") and stripped.count("|") >= 2:
+            table_buffer.append(line)
+            i += 1
+            continue
+        else:
+            flush_table()
+
+        if not stripped:
+            i += 1
+            continue
+
+        # Headings
+        heading_match = re.match(r"^(#{1,6})\s+(.*)$", stripped)
+        if heading_match:
+            level = len(heading_match.group(1))
+            text = heading_match.group(2).replace("**", "")
+            if level == 1:
+                h = doc.add_heading(text, level=0)
+            else:
+                h = doc.add_heading(text, level=min(level, 4))
+            i += 1
+            continue
+
+        # Horizontal rule
+        if re.match(r"^---+$", stripped):
+            i += 1
+            continue
+
+        # Bullet list
+        bullet_match = re.match(r"^[-*]\s+(.*)$", stripped)
+        if bullet_match:
+            p = doc.add_paragraph(style="List Bullet")
+            add_runs_with_bold(p, bullet_match.group(1))
+            i += 1
+            continue
+
+        # Numbered list
+        num_match = re.match(r"^\d+\.\s+(.*)$", stripped)
+        if num_match:
+            p = doc.add_paragraph(style="List Number")
+            add_runs_with_bold(p, num_match.group(1))
+            i += 1
+            continue
+
+        # Normal paragraph
+        p = doc.add_paragraph()
+        add_runs_with_bold(p, stripped)
+        i += 1
+
+    flush_table()
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer
 
 
 @asynccontextmanager
@@ -81,6 +208,9 @@ async def list_sessions():
             "title": s.title,
             "message_count": len(s.messages),
             "token_usage": s.token_usage.cumulative.model_dump(),
+            "collaborator_count": len(s.collaborators),
+            "assignee": s.assignee,
+            "has_draft": bool(s.draft.content.strip()),
             "created_at": s.created_at.isoformat(),
             "updated_at": s.updated_at.isoformat(),
         }
@@ -141,10 +271,143 @@ async def edit_message(req: EditMessageRequest):
                 msg.original_content = msg.content
             msg.content = req.new_content
             msg.is_edited = True
+            msg.edited_by = req.user_name
             session.updated_at = datetime.utcnow()
             return msg.model_dump()
 
     raise HTTPException(status_code=404, detail="Message not found")
+
+
+# --- Collaboration ---
+
+
+@app.post("/api/sessions/{session_id}/collaborators")
+async def add_collaborator(session_id: str, req: AddCollaboratorRequest):
+    """Invite a collaborator to a session."""
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    # Avoid duplicate emails
+    for c in session.collaborators:
+        if c.email.lower() == req.email.lower():
+            return c.model_dump()
+    collab = Collaborator(name=req.name, email=req.email, role=req.role)
+    session.collaborators.append(collab)
+    session.updated_at = datetime.utcnow()
+    return collab.model_dump()
+
+
+@app.delete("/api/sessions/{session_id}/collaborators/{collaborator_id}")
+async def remove_collaborator(session_id: str, collaborator_id: str):
+    """Remove a collaborator from a session."""
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session.collaborators = [
+        c for c in session.collaborators if c.id != collaborator_id
+    ]
+    if session.assignee == collaborator_id:
+        session.assignee = None
+    session.updated_at = datetime.utcnow()
+    return {"status": "removed"}
+
+
+@app.put("/api/sessions/{session_id}/assign")
+async def assign_session(session_id: str, req: AssignRequest):
+    """Assign session ownership to a collaborator (or clear with null)."""
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if req.collaborator_id and not any(
+        c.id == req.collaborator_id for c in session.collaborators
+    ):
+        raise HTTPException(status_code=400, detail="Collaborator not found in session")
+    session.assignee = req.collaborator_id
+    session.updated_at = datetime.utcnow()
+    return {"assignee": session.assignee}
+
+
+# --- Draft Document ---
+
+
+@app.get("/api/sessions/{session_id}/draft")
+async def get_draft(session_id: str):
+    """Get the draft document for a session."""
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session.draft.model_dump()
+
+
+@app.put("/api/sessions/{session_id}/draft")
+async def save_draft(session_id: str, req: SaveDraftRequest):
+    """Save/update the draft document for a session."""
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session.draft = DraftDocument(
+        content=req.content,
+        updated_at=datetime.utcnow(),
+        updated_by=req.user_name,
+    )
+    session.updated_at = datetime.utcnow()
+    return session.draft.model_dump()
+
+
+@app.get("/api/sessions/{session_id}/draft/export/markdown")
+async def export_markdown(session_id: str):
+    """Export the draft as a Markdown file."""
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    filename = _safe_filename(session.title) + ".md"
+    return Response(
+        content=session.draft.content,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/sessions/{session_id}/draft/export/docx")
+async def export_docx(session_id: str):
+    """Export the draft as a Word (.docx) file."""
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    buffer = _markdown_to_docx(session.draft.content, session.title)
+    filename = _safe_filename(session.title) + ".docx"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# --- Rubric Evaluation ---
+
+
+@app.post("/api/sessions/{session_id}/evaluate")
+async def evaluate_draft(session_id: str, req: EvaluateDraftRequest):
+    """Evaluate the draft against an executive-briefing rubric."""
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    content = req.content if req.content is not None else session.draft.content
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="Draft is empty — nothing to evaluate")
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, orchestrator.evaluate_draft, content)
+
+    session.evaluation = DraftEvaluation(
+        overall_score=result.get("overall_score", 0.0),
+        criteria=[RubricCriterion(**c) for c in result.get("criteria", [])],
+        summary=result.get("summary", ""),
+        strengths=result.get("strengths", []),
+        improvements=result.get("improvements", []),
+    )
+    session.updated_at = datetime.utcnow()
+    return session.evaluation.model_dump()
 
 
 # --- Streaming Chat ---
