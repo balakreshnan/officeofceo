@@ -37,6 +37,7 @@ from models import (
     AssignRequest,
     SaveDraftRequest,
     EvaluateDraftRequest,
+    RephraseRequest,
     StreamEvent,
 )
 from agents import AgentOrchestrator
@@ -408,6 +409,21 @@ async def evaluate_draft(session_id: str, req: EvaluateDraftRequest):
     )
     session.updated_at = datetime.utcnow()
     return session.evaluation.model_dump()
+
+
+# --- AI Rephrase ---
+
+
+@app.post("/api/rephrase")
+async def rephrase(req: RephraseRequest):
+    """Rephrase a snippet of selected text using the GPT model deployment."""
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="No text provided to rephrase")
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None, orchestrator.rephrase_text, req.text, req.instruction or "", req.tone or ""
+    )
+    return result
 
 
 # --- Streaming Chat ---

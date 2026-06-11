@@ -107,6 +107,12 @@ class EvaluateDraftRequest(BaseModel):
     content: Optional[str] = None  # if omitted, uses stored draft
 
 
+class RephraseRequest(BaseModel):
+    text: str
+    instruction: Optional[str] = ""
+    tone: Optional[str] = ""
+
+
 class StreamEvent(BaseModel):
     type: str  # "agent_started", "token", "agent_completed", "error", "usage", "done"
     agent: Optional[str] = None

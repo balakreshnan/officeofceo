@@ -21,6 +21,10 @@ class AgentOrchestrator:
             "CUSTOMER_DATA_AGENT_NAME", "oceo-customerdata"
         )
         self.insights_name = os.getenv("INSIGHTS_AGENT_NAME", "oceo-insights")
+        self.model_deployment = os.getenv("AZURE_AI_MODEL_DEPLOYMENT", "gpt-5.4-mini")
+        self.openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+        # Base resource endpoint (strip the /api/projects/... suffix used for agents)
+        self.resource_endpoint = self.endpoint.split("/api/projects/")[0] if self.endpoint else ""
         self.client = None  # kept for health check compatibility
         self.credential = None
         self._token = None
@@ -43,9 +47,84 @@ class AgentOrchestrator:
             print(f"Warning: Could not initialize credentials: {e}")
 
     def _get_token(self) -> str:
-        """Get or refresh bearer token."""
+        """Get or refresh bearer token (Foundry agents scope)."""
         self._token = self.credential.get_token("https://ai.azure.com/.default").token
         return self._token
+
+    def _get_cognitive_token(self) -> str:
+        """Bearer token for the Cognitive Services data plane (model inference)."""
+        return self.credential.get_token(
+            "https://cognitiveservices.azure.com/.default"
+        ).token
+
+    def rephrase_text(self, text: str, instruction: str = "", tone: str = "") -> dict:
+        """Rephrase selected text using a direct GPT model deployment.
+
+        Returns {"text": <rephrased>, "usage": {...}}. Falls back to a light
+        heuristic when no model connection is available.
+        """
+        text = (text or "").strip()
+        if not text:
+            return {"text": "", "usage": TokenUsage().model_dump()}
+
+        if not self.client or not self.resource_endpoint:
+            return {"text": self._demo_rephrase(text), "usage": TokenUsage().model_dump()}
+
+        system_prompt = (
+            "You are an expert executive-communications editor. Rephrase the user's "
+            "text to be clearer, more concise, and professional, suitable for a CEO "
+            "briefing. Preserve all facts, figures, and meaning. Keep any Markdown "
+            "formatting intact. Return ONLY the rephrased text with no preamble, "
+            "quotes, or commentary."
+        )
+        if tone:
+            system_prompt += f" Use a {tone} tone."
+
+        user_content = text
+        if instruction:
+            user_content = f"Instruction: {instruction}\n\nText:\n{text}"
+
+        try:
+            token = self._get_cognitive_token()
+            url = (
+                f"{self.resource_endpoint}/openai/deployments/{self.model_deployment}"
+                f"/chat/completions?api-version={self.openai_api_version}"
+            )
+            resp = requests.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                    "temperature": 0.5,
+                },
+                timeout=60,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            rephrased = data["choices"][0]["message"]["content"].strip()
+            # Strip surrounding quotes the model sometimes adds
+            if len(rephrased) >= 2 and rephrased[0] in '"“' and rephrased[-1] in '"”':
+                rephrased = rephrased[1:-1].strip()
+            u = data.get("usage", {})
+            usage = TokenUsage(
+                prompt_tokens=u.get("prompt_tokens", 0),
+                completion_tokens=u.get("completion_tokens", 0),
+                total_tokens=u.get("total_tokens", 0),
+            )
+            return {"text": rephrased, "usage": usage.model_dump()}
+        except Exception as e:
+            print(f"Warning: rephrase failed, using fallback - {e}")
+            return {"text": self._demo_rephrase(text), "usage": TokenUsage().model_dump()}
+
+    def _demo_rephrase(self, text: str) -> str:
+        """Trivial offline fallback when no model is available."""
+        return text.strip()
 
     async def initialize(self):
         """Verify connection is working."""

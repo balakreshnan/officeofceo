@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import {
   Bold, Heading1, Heading2, List, ListOrdered, Quote, Save,
   Download, FileText, Sparkles, ClipboardList, Loader2, CheckCircle2,
-  AlertCircle, TrendingUp, Eye, Pencil,
+  AlertCircle, TrendingUp, Eye, Pencil, Wand2, X, RefreshCw,
 } from 'lucide-react';
 import { Session, DraftEvaluation } from '../types';
 
@@ -25,6 +25,14 @@ export default function DocumentTab({ session, userName, onChange }: Props) {
   const [evaluation, setEvaluation] = useState<DraftEvaluation | null>(session.evaluation || null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const saveTimer = useRef<number | null>(null);
+
+  // Rephrase (AI) state
+  const [selRange, setSelRange] = useState<{ start: number; end: number; text: string } | null>(null);
+  const [rephraseOpen, setRephraseOpen] = useState(false);
+  const [rephraseLoading, setRephraseLoading] = useState(false);
+  const [rephraseResult, setRephraseResult] = useState('');
+  const [rephraseInstruction, setRephraseInstruction] = useState('');
+  const [rephraseTokens, setRephraseTokens] = useState<number | null>(null);
 
   // Sync when switching sessions
   useEffect(() => {
@@ -78,6 +86,55 @@ export default function DocumentTab({ session, userName, onChange }: Props) {
       const pos = start + before.length + selected.length;
       ta.setSelectionRange(pos, pos);
     });
+  }
+
+  function trackSelection() {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    if (end > start) {
+      setSelRange({ start, end, text: content.slice(start, end) });
+    } else {
+      setSelRange(null);
+    }
+  }
+
+  async function runRephrase(instruction = rephraseInstruction) {
+    if (!selRange) return;
+    setRephraseLoading(true);
+    setRephraseResult('');
+    setRephraseTokens(null);
+    try {
+      const res = await fetch('/api/rephrase', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: selRange.text, instruction }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setRephraseResult(data.text || '');
+        setRephraseTokens(data.usage?.total_tokens ?? null);
+      }
+    } catch { /* no-op */ }
+    setRephraseLoading(false);
+  }
+
+  function openRephrase() {
+    if (!selRange) return;
+    setRephraseInstruction('');
+    setRephraseResult('');
+    setRephraseTokens(null);
+    setRephraseOpen(true);
+    runRephrase('');
+  }
+
+  function acceptRephrase() {
+    if (!selRange || !rephraseResult) return;
+    const next = content.slice(0, selRange.start) + rephraseResult + content.slice(selRange.end);
+    update(next);
+    setRephraseOpen(false);
+    setSelRange(null);
   }
 
   function pullFromInsights() {
@@ -206,9 +263,18 @@ export default function DocumentTab({ session, userName, onChange }: Props) {
               className="doc-editor"
               value={content}
               onChange={e => update(e.target.value)}
+              onSelect={trackSelection}
+              onMouseUp={trackSelection}
+              onKeyUp={trackSelection}
               placeholder="Start writing your executive briefing, or click 'Pull from insights' to import the latest agent output…"
               spellCheck
             />
+            {selRange && !rephraseOpen && (
+              <button className="doc-rephrase-fab" onClick={openRephrase} title="Rephrase selection with AI">
+                <Pencil size={16} />
+                <span>Rephrase</span>
+              </button>
+            )}
           </div>
         )}
         {view !== 'edit' && (
@@ -281,6 +347,59 @@ export default function DocumentTab({ session, userName, onChange }: Props) {
       {!evaluation && content.trim() && (
         <div className="rubric-hint">
           <AlertCircle size={14} /> Click <strong>Evaluate</strong> to score this draft against the executive briefing rubric.
+        </div>
+      )}
+
+      {rephraseOpen && (
+        <div className="rephrase-overlay" onClick={() => setRephraseOpen(false)}>
+          <div className="rephrase-modal" onClick={e => e.stopPropagation()}>
+            <div className="rephrase-head">
+              <div className="rephrase-title"><Wand2 size={16} /> AI Rephrase <span className="rephrase-model">gpt-5.4-mini</span></div>
+              <button className="rephrase-close" onClick={() => setRephraseOpen(false)}><X size={16} /></button>
+            </div>
+
+            <div className="rephrase-section">
+              <div className="rephrase-label">Original</div>
+              <div className="rephrase-original">{selRange?.text}</div>
+            </div>
+
+            <div className="rephrase-section">
+              <div className="rephrase-label">Suggestion</div>
+              {rephraseLoading ? (
+                <div className="rephrase-loading"><Loader2 size={16} className="spin" /> Rephrasing…</div>
+              ) : (
+                <textarea
+                  className="rephrase-result"
+                  value={rephraseResult}
+                  onChange={e => setRephraseResult(e.target.value)}
+                  rows={4}
+                />
+              )}
+              {rephraseTokens !== null && !rephraseLoading && (
+                <div className="rephrase-tokens">{rephraseTokens} tokens used</div>
+              )}
+            </div>
+
+            <div className="rephrase-instruction-row">
+              <input
+                className="rephrase-instruction"
+                placeholder="Optional: e.g. 'make it more concise' or 'more formal tone'"
+                value={rephraseInstruction}
+                onChange={e => setRephraseInstruction(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') runRephrase(); }}
+              />
+              <button className="rephrase-regen" onClick={() => runRephrase()} disabled={rephraseLoading}>
+                <RefreshCw size={14} /> Regenerate
+              </button>
+            </div>
+
+            <div className="rephrase-actions">
+              <button className="rephrase-cancel" onClick={() => setRephraseOpen(false)}>Cancel</button>
+              <button className="rephrase-accept" onClick={acceptRephrase} disabled={rephraseLoading || !rephraseResult.trim()}>
+                <CheckCircle2 size={14} /> Replace selection
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

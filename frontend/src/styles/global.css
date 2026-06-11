@@ -1531,3 +1531,128 @@ body {
   .doc-workspace.view-split { flex-direction: column; }
   .doc-workspace.view-split .doc-editor-pane { border-right: none; border-bottom: 1px solid var(--border-color); }
 }
+
+/* ===== AI Rephrase ===== */
+.doc-editor-pane { position: relative; }
+.doc-rephrase-fab {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  background: var(--accent-gradient);
+  color: #fff;
+  border: none;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(59,130,246,0.4);
+  z-index: 20;
+  animation: fab-in 0.15s ease;
+}
+.doc-rephrase-fab:hover { filter: brightness(1.08); }
+@keyframes fab-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+
+.rephrase-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 11, 18, 0.7);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.rephrase-modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  width: 560px;
+  max-width: 92vw;
+  max-height: 88vh;
+  overflow-y: auto;
+  padding: 22px;
+  box-shadow: var(--shadow-lg);
+}
+.rephrase-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+.rephrase-title { display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 600; }
+.rephrase-model { font-size: 11px; font-weight: 500; color: #fff; background: var(--accent-secondary); padding: 2px 8px; border-radius: 10px; }
+.rephrase-close { background: none; border: none; color: var(--text-muted); cursor: pointer; }
+.rephrase-section { margin-bottom: 16px; }
+.rephrase-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); margin-bottom: 6px; }
+.rephrase-original {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+.rephrase-loading { display: flex; align-items: center; gap: 8px; padding: 18px; color: var(--text-secondary); font-size: 13px; }
+.rephrase-result {
+  width: 100%;
+  background: var(--bg-primary);
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  resize: vertical;
+  outline: none;
+  font-family: inherit;
+}
+.rephrase-tokens { font-size: 11px; color: var(--text-muted); margin-top: 5px; text-align: right; }
+.rephrase-instruction-row { display: flex; gap: 8px; margin-bottom: 18px; }
+.rephrase-instruction {
+  flex: 1;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  font-size: 13px;
+  color: var(--text-primary);
+  outline: none;
+}
+.rephrase-instruction:focus { border-color: var(--accent-primary); }
+.rephrase-regen {
+  display: flex; align-items: center; gap: 6px;
+  padding: 9px 14px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rephrase-regen:hover { background: var(--bg-hover); }
+.rephrase-regen:disabled { opacity: 0.5; cursor: not-allowed; }
+.rephrase-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.rephrase-cancel {
+  padding: 9px 18px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+.rephrase-accept {
+  display: flex; align-items: center; gap: 6px;
+  padding: 9px 18px;
+  background: var(--accent-primary);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.rephrase-accept:disabled { opacity: 0.5; cursor: not-allowed; }
