@@ -147,10 +147,10 @@ function App() {
       const res = await fetch(`/api/sessions/${sessionId}`);
       const data = await res.json();
       setActiveSession(data);
-      // Reset live-derived visuals so they don't carry over between sessions
-      setScorecardData(null);
-      setWatermelonData(null);
-      setGraphData(null);
+      // Restore persisted visuals for this session (null if none captured yet)
+      setScorecardData(data.scorecard_data ?? null);
+      setWatermelonData(data.watermelon_data ?? null);
+      setGraphData(data.graph_data ?? null);
       setWatermelonRevealed(false);
     } catch { /* no-op */ }
   }

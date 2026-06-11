@@ -586,18 +586,21 @@ async def stream_chat(req: SendMessageRequest):
                     yield f"data: {sse_data}\n\n"
 
                 elif event_type == "context_graph":
+                    session.graph_data = event.get("data")
                     sse_data = json.dumps(
                         {"type": "context_graph", "data": event.get("data")}
                     )
                     yield f"data: {sse_data}\n\n"
 
                 elif event_type == "watermelon_data":
+                    session.watermelon_data = event.get("data")
                     sse_data = json.dumps(
                         {"type": "watermelon_data", "data": event.get("data")}
                     )
                     yield f"data: {sse_data}\n\n"
 
                 elif event_type == "scorecard_data":
+                    session.scorecard_data = event.get("data")
                     sse_data = json.dumps(
                         {"type": "scorecard_data", "data": event.get("data")}
                     )

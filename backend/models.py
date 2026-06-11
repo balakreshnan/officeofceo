@@ -68,6 +68,9 @@ class Session(BaseModel):
     assignee: Optional[str] = None  # collaborator id assigned ownership
     draft: DraftDocument = Field(default_factory=DraftDocument)
     evaluation: Optional[DraftEvaluation] = None
+    graph_data: Optional[dict] = None
+    watermelon_data: Optional[dict] = None
+    scorecard_data: Optional[dict] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

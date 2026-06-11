@@ -821,12 +821,18 @@ class AgentOrchestrator:
             account_name = account_info.get("account_name")
 
         # System metrics (the "green" side)
+        rev_growth = fin.get("yoy_growth_pct") or fin.get("growth", "")
+        if isinstance(rev_growth, float):
+            rev_growth = f"{rev_growth * 100:.1f}%"
+        cons_growth = tel.get("qoq_growth_pct") or tel.get("mom_growth_pct") or tel.get("growth", "")
+        if isinstance(cons_growth, float):
+            cons_growth = f"{cons_growth * 100:.1f}%"
         system_metrics = {
             "revenue": fin.get("ytd_revenue_usd") or fin.get("annual_revenue") or fin.get("revenue", "N/A"),
-            "revenue_growth": fin.get("yoy_growth_pct") or fin.get("growth", ""),
-            "consumption_growth": tel.get("mom_growth_pct") or tel.get("growth", ""),
+            "revenue_growth": rev_growth,
+            "consumption_growth": cons_growth,
             "nps": risk.get("nps") or account_info.get("nps", ""),
-            "support_tickets": risk.get("open_p1_p2") or risk.get("support_tickets", ""),
+            "support_tickets": risk.get("open_P1") or risk.get("open_p1_p2") or risk.get("support_tickets", ""),
             "engagement": account_info.get("signals", [{}])[0].get("value", "healthy") if account_info.get("signals") else "N/A",
             "renewal_status": risk.get("renewal_status") or "On Track",
         }
@@ -836,11 +842,21 @@ class AgentOrchestrator:
         watermelon_signals = []
         for flag in flags:
             if isinstance(flag, dict):
-                watermelon_signals.append({
-                    "severity": flag.get("severity", "amber"),
-                    "signal": flag.get("signal") or flag.get("description") or flag.get("finding", "Unknown signal"),
-                    "source": flag.get("source", "Agent intelligence"),
-                })
+                signal = (
+                    flag.get("signal") or flag.get("description")
+                    or flag.get("finding") or flag.get("note")
+                )
+                severity = flag.get("severity")
+                if not severity:
+                    sv = flag.get("system_view", {})
+                    sentiment = sv.get("system_sentiment") if isinstance(sv, dict) else None
+                    severity = sentiment if sentiment in ("red", "amber") else "amber"
+                if signal:
+                    watermelon_signals.append({
+                        "severity": severity,
+                        "signal": signal,
+                        "source": flag.get("source", "Agent intelligence"),
+                    })
             elif isinstance(flag, str):
                 watermelon_signals.append({"severity": "red", "signal": flag, "source": "Agent intelligence"})
 
@@ -946,20 +962,26 @@ class AgentOrchestrator:
             revenue_growth = f"{((revenue - prior_revenue) / prior_revenue) * 100:.1f}%"
         else:
             revenue_growth = fin.get("yoy_growth_pct") or fin.get("growth_pct", "N/A")
+        if isinstance(revenue_growth, float):
+            revenue_growth = f"{revenue_growth * 100:.1f}%"
         margin = fin.get("margin_pct", "")
         if isinstance(margin, float) and margin < 1:
             margin = f"{margin * 100:.0f}%"
 
         # Pipeline
         opps = pipeline.get("opportunities") or pipeline.get("deals") or []
-        total_pipeline = pipeline.get("total_open_pipeline_usd") or sum(
-            float(o.get("value", 0) or o.get("amount", 0) or o.get("amount_usd", 0) or 0)
-            for o in opps if isinstance(o, dict)
+        total_pipeline = (
+            pipeline.get("total_open_pipeline_usd")
+            or pipeline.get("open_usd")
+            or sum(
+                float(o.get("value", 0) or o.get("amount", 0) or o.get("amount_usd", 0) or 0)
+                for o in opps if isinstance(o, dict)
+            )
         )
-        deal_count = len(opps)
+        deal_count = len(opps) or (1 if pipeline.get("open_usd") else 0)
 
         # Telemetry
-        active_seats = tel.get("monthly_active_seats") or tel.get("active_users", "")
+        active_seats = tel.get("monthly_active_seats") or tel.get("active_seats") or tel.get("active_users", "")
         consumption_trend = tel.get("consumption_trend") or tel.get("trend", "")
         qoq_growth = tel.get("qoq_growth_pct") or tel.get("mom_growth_pct", "")
         if isinstance(qoq_growth, float):
@@ -984,7 +1006,7 @@ class AgentOrchestrator:
             if isinstance(flag, dict):
                 risk_factors.append({
                     "severity": flag.get("severity", "amber"),
-                    "description": flag.get("signal") or flag.get("description") or flag.get("finding", ""),
+                    "description": flag.get("signal") or flag.get("description") or flag.get("finding") or flag.get("note", ""),
                 })
             elif isinstance(flag, str):
                 risk_factors.append({"severity": "amber", "description": flag})
