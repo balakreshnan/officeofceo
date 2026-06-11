@@ -6,6 +6,7 @@ import { useIdentity } from './hooks/useIdentity';
 import IdentityModal from './components/IdentityModal';
 import CollaborationPanel from './components/CollaborationPanel';
 import DocumentTab from './components/DocumentTab';
+import ChatCharts from './components/ChatCharts';
 import ReactMarkdown from 'react-markdown';
 import { Send, Mic, MicOff, Plus, MessageSquare, Zap, X, Edit3, Check, RotateCcw, GitBranch, AlertTriangle, BarChart3, FileText } from 'lucide-react';
 import ForceGraph2D from 'react-force-graph-2d';
@@ -128,6 +129,11 @@ function App() {
       const res = await fetch(`/api/sessions/${sessionId}`);
       const data = await res.json();
       setActiveSession(data);
+      // Reset live-derived visuals so they don't carry over between sessions
+      setScorecardData(null);
+      setWatermelonData(null);
+      setGraphData(null);
+      setWatermelonRevealed(false);
     } catch { /* no-op */ }
   }
 
@@ -844,6 +850,7 @@ function App() {
           </div>
         ) : (
           <div className="messages-container">
+            {scorecardData && <ChatCharts scorecard={scorecardData} />}
             {activeSession.messages.map(msg => (
               <div key={msg.id} className={`message ${msg.role}`}>
                 <div className="message-avatar">

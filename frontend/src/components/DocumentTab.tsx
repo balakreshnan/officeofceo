@@ -4,6 +4,7 @@ import {
   Bold, Heading1, Heading2, List, ListOrdered, Quote, Save,
   Download, FileText, Sparkles, ClipboardList, Loader2, CheckCircle2,
   AlertCircle, TrendingUp, Eye, Pencil, Wand2, X, RefreshCw,
+  ChevronDown, ChevronRight,
 } from 'lucide-react';
 import { Session, DraftEvaluation } from '../types';
 
@@ -23,6 +24,7 @@ export default function DocumentTab({ session, userName, onChange }: Props) {
   const [view, setView] = useState<ViewMode>('split');
   const [evaluating, setEvaluating] = useState(false);
   const [evaluation, setEvaluation] = useState<DraftEvaluation | null>(session.evaluation || null);
+  const [evalCollapsed, setEvalCollapsed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const saveTimer = useRef<number | null>(null);
 
@@ -189,6 +191,7 @@ export default function DocumentTab({ session, userName, onChange }: Props) {
       if (res.ok) {
         const evalResult: DraftEvaluation = await res.json();
         setEvaluation(evalResult);
+        setEvalCollapsed(false);
         onChange({ ...session, evaluation: evalResult });
       }
     } catch { /* no-op */ }
@@ -297,8 +300,9 @@ export default function DocumentTab({ session, userName, onChange }: Props) {
       {/* Rubric evaluation */}
       {evaluation && (
         <div className="rubric-panel">
-          <div className="rubric-header">
+          <div className="rubric-header rubric-header-toggle" onClick={() => setEvalCollapsed(c => !c)}>
             <div className="rubric-title">
+              {evalCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
               <ClipboardList size={16} /> Draft Quality Evaluation
             </div>
             <div className={`rubric-overall ${scoreColor(evaluation.overall_score)}`}>
@@ -307,6 +311,7 @@ export default function DocumentTab({ session, userName, onChange }: Props) {
             </div>
           </div>
 
+          {!evalCollapsed && <>
           {evaluation.summary && <p className="rubric-summary">{evaluation.summary}</p>}
 
           <div className="rubric-criteria">
@@ -341,6 +346,7 @@ export default function DocumentTab({ session, userName, onChange }: Props) {
               </div>
             )}
           </div>
+          </>}
         </div>
       )}
 
