@@ -13,7 +13,38 @@ class ChatMessage(BaseModel):
     agent: Optional[str] = None  # "context-builder", "insights", or None
     is_edited: bool = False
     original_content: Optional[str] = None
+    edited_by: Optional[str] = None  # display name of collaborator who last edited
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Collaborator(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    email: str
+    role: str = "editor"  # "owner", "editor", "viewer"
+    added_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class DraftDocument(BaseModel):
+    content: str = ""  # markdown content
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_by: Optional[str] = None
+
+
+class RubricCriterion(BaseModel):
+    name: str
+    score: float  # 1-5
+    max_score: float = 5.0
+    rationale: str = ""
+
+
+class DraftEvaluation(BaseModel):
+    overall_score: float = 0.0  # 0-100
+    criteria: list[RubricCriterion] = Field(default_factory=list)
+    summary: str = ""
+    strengths: list[str] = Field(default_factory=list)
+    improvements: list[str] = Field(default_factory=list)
+    evaluated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class TokenUsage(BaseModel):
@@ -33,6 +64,13 @@ class Session(BaseModel):
     title: str = "New Session"
     messages: list[ChatMessage] = Field(default_factory=list)
     token_usage: SessionTokenUsage = Field(default_factory=SessionTokenUsage)
+    collaborators: list[Collaborator] = Field(default_factory=list)
+    assignee: Optional[str] = None  # collaborator id assigned ownership
+    draft: DraftDocument = Field(default_factory=DraftDocument)
+    evaluation: Optional[DraftEvaluation] = None
+    graph_data: Optional[dict] = None
+    watermelon_data: Optional[dict] = None
+    scorecard_data: Optional[dict] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -50,6 +88,37 @@ class EditMessageRequest(BaseModel):
     message_id: str
     session_id: str
     new_content: str
+    user_name: Optional[str] = None
+
+
+class AddCollaboratorRequest(BaseModel):
+    name: str
+    email: str
+    role: str = "editor"
+
+
+class AssignRequest(BaseModel):
+    collaborator_id: Optional[str] = None
+
+
+class SaveDraftRequest(BaseModel):
+    content: str
+    user_name: Optional[str] = None
+
+
+class EvaluateDraftRequest(BaseModel):
+    content: Optional[str] = None  # if omitted, uses stored draft
+
+
+class RephraseRequest(BaseModel):
+    text: str
+    instruction: Optional[str] = ""
+    tone: Optional[str] = ""
+
+
+class TTSRequest(BaseModel):
+    text: str
+    voice: Optional[str] = "alloy"
 
 
 class StreamEvent(BaseModel):

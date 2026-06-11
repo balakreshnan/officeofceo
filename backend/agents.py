@@ -3,6 +3,9 @@
 import os
 import json
 import asyncio
+import base64
+import io
+import wave
 import requests
 from typing import AsyncGenerator
 from azure.identity import DefaultAzureCredential, AzureCliCredential
@@ -21,9 +24,21 @@ class AgentOrchestrator:
             "CUSTOMER_DATA_AGENT_NAME", "oceo-customerdata"
         )
         self.insights_name = os.getenv("INSIGHTS_AGENT_NAME", "oceo-insights")
+        self.model_deployment = os.getenv("AZURE_AI_MODEL_DEPLOYMENT", "gpt-5.4-mini")
+        self.openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+        self.responses_api_version = os.getenv(
+            "AZURE_OPENAI_RESPONSES_API_VERSION", "2025-04-01-preview"
+        )
+        self.audio_model = os.getenv("AUDIO_MODEL", "gpt-realtime-1.5")
+        self.realtime_api_version = os.getenv(
+            "AZURE_OPENAI_REALTIME_API_VERSION", "2025-04-01-preview"
+        )
+        # Base resource endpoint (strip the /api/projects/... suffix used for agents)
+        self.resource_endpoint = self.endpoint.split("/api/projects/")[0] if self.endpoint else ""
         self.client = None  # kept for health check compatibility
         self.credential = None
         self._token = None
+        self._openai_client = None  # lazily-built AzureOpenAI client (Responses API)
 
         try:
             tenant_id = os.getenv("AZURE_TENANT_ID", "")
@@ -43,9 +58,193 @@ class AgentOrchestrator:
             print(f"Warning: Could not initialize credentials: {e}")
 
     def _get_token(self) -> str:
-        """Get or refresh bearer token."""
+        """Get or refresh bearer token (Foundry agents scope)."""
         self._token = self.credential.get_token("https://ai.azure.com/.default").token
         return self._token
+
+    def _get_openai_client(self):
+        """Lazily build an AzureOpenAI client for the Responses API.
+
+        Authenticates with DefaultAzureCredential via a bearer-token provider
+        scoped to the Cognitive Services data plane
+        (https://cognitiveservices.azure.com/.default).
+        """
+        if self._openai_client is not None:
+            return self._openai_client
+
+        from openai import AzureOpenAI
+        from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+
+        token_provider = get_bearer_token_provider(
+            DefaultAzureCredential(),
+            "https://cognitiveservices.azure.com/.default",
+        )
+        self._openai_client = AzureOpenAI(
+            azure_endpoint=self.resource_endpoint,
+            azure_ad_token_provider=token_provider,
+            api_version=self.responses_api_version,
+        )
+        return self._openai_client
+
+    def rephrase_text(self, text: str, instruction: str = "", tone: str = "") -> dict:
+        """Rephrase selected text using the OpenAI Responses API SDK.
+
+        Calls the gpt model deployment via client.responses.create(). Returns
+        {"text": <rephrased>, "usage": {...}}. Falls back to a light heuristic
+        when no model connection is available.
+        """
+        text = (text or "").strip()
+        if not text:
+            return {"text": "", "usage": TokenUsage().model_dump()}
+
+        if not self.client or not self.resource_endpoint:
+            return {"text": self._demo_rephrase(text), "usage": TokenUsage().model_dump()}
+
+        system_prompt = (
+            "You are an expert executive-communications editor. Rephrase the user's "
+            "text to be clearer, more concise, and professional, suitable for a CEO "
+            "briefing. Preserve all facts, figures, and meaning. Keep any Markdown "
+            "formatting intact. Return ONLY the rephrased text with no preamble, "
+            "quotes, or commentary."
+        )
+        if tone:
+            system_prompt += f" Use a {tone} tone."
+
+        user_content = text
+        if instruction:
+            user_content = f"Instruction: {instruction}\n\nText:\n{text}"
+
+        try:
+            client = self._get_openai_client()
+            resp = client.responses.create(
+                model=self.model_deployment,
+                instructions=system_prompt,
+                input=user_content,
+                temperature=0.5,
+            )
+            rephrased = (resp.output_text or "").strip()
+            # Strip surrounding quotes the model sometimes adds
+            if len(rephrased) >= 2 and rephrased[0] in '"“' and rephrased[-1] in '"”':
+                rephrased = rephrased[1:-1].strip()
+
+            usage = TokenUsage()
+            if resp.usage is not None:
+                usage = TokenUsage(
+                    prompt_tokens=getattr(resp.usage, "input_tokens", 0) or 0,
+                    completion_tokens=getattr(resp.usage, "output_tokens", 0) or 0,
+                    total_tokens=getattr(resp.usage, "total_tokens", 0) or 0,
+                )
+            return {"text": rephrased, "usage": usage.model_dump()}
+        except Exception as e:
+            print(f"Warning: rephrase failed, using fallback - {e}")
+            return {"text": self._demo_rephrase(text), "usage": TokenUsage().model_dump()}
+
+    def _demo_rephrase(self, text: str) -> str:
+        """Trivial offline fallback when no model is available."""
+        return text.strip()
+
+    async def synthesize_speech(self, text: str, voice: str = "alloy") -> bytes:
+        """Synthesize speech from text using the AUDIO_MODEL realtime deployment.
+
+        Connects to the Azure AI Foundry / OpenAI realtime WebSocket endpoint,
+        authenticates with a DefaultAzureCredential bearer token scoped to the
+        Cognitive Services data plane, drives a text-in / audio-out turn, and
+        returns a complete 24 kHz mono 16-bit WAV byte payload.
+
+        Raises RuntimeError if no Azure connection is configured or synthesis
+        fails (the route maps that to a 503 so the client can fall back to the
+        browser speech synthesizer).
+        """
+        text = (text or "").strip()
+        if not text:
+            raise RuntimeError("No text provided for speech synthesis.")
+        if not self.client or not self.resource_endpoint:
+            raise RuntimeError("Azure audio model not configured.")
+
+        # Keep latency reasonable for long documents.
+        if len(text) > 6000:
+            text = text[:6000]
+
+        import websockets
+        from azure.identity import DefaultAzureCredential
+
+        token = DefaultAzureCredential().get_token(
+            "https://cognitiveservices.azure.com/.default"
+        ).token
+
+        ws_base = self.resource_endpoint.replace("https://", "wss://").replace("http://", "ws://")
+        url = (
+            f"{ws_base}/openai/realtime"
+            f"?api-version={self.realtime_api_version}"
+            f"&deployment={self.audio_model}"
+        )
+
+        instructions = (
+            "You are a text-to-speech engine. Speak the user's message exactly as "
+            "written, verbatim, in a clear, warm, professional executive-briefing "
+            "voice. Do not answer questions, summarize, translate, omit, or add any "
+            "words of your own. Read only what is provided."
+        )
+
+        pcm = bytearray()
+        try:
+            async with websockets.connect(
+                url,
+                extra_headers={"Authorization": f"Bearer {token}"},
+                max_size=None,
+                open_timeout=20,
+            ) as ws:
+                await ws.send(json.dumps({
+                    "type": "session.update",
+                    "session": {
+                        "modalities": ["audio", "text"],
+                        "voice": voice or "alloy",
+                        "output_audio_format": "pcm16",
+                        "instructions": instructions,
+                    },
+                }))
+                await ws.send(json.dumps({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": text}],
+                    },
+                }))
+                await ws.send(json.dumps({
+                    "type": "response.create",
+                    "response": {"modalities": ["audio", "text"]},
+                }))
+
+                while True:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=60)
+                    evt = json.loads(raw)
+                    etype = evt.get("type", "")
+                    if etype in ("response.audio.delta", "response.output_audio.delta"):
+                        delta = evt.get("delta")
+                        if delta:
+                            pcm.extend(base64.b64decode(delta))
+                    elif etype in ("response.done", "response.audio.done",
+                                   "response.output_audio.done"):
+                        if etype == "response.done":
+                            break
+                    elif etype == "error":
+                        msg = evt.get("error", {}).get("message", "realtime error")
+                        raise RuntimeError(msg)
+        except Exception as e:
+            raise RuntimeError(f"Speech synthesis failed: {e}")
+
+        if not pcm:
+            raise RuntimeError("No audio was returned by the model.")
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(24000)
+            wf.writeframes(bytes(pcm))
+        return buf.getvalue()
+
 
     async def initialize(self):
         """Verify connection is working."""
@@ -211,9 +410,13 @@ class AgentOrchestrator:
             try:
                 graph_data = self._extract_graph(context_content)
                 if graph_data:
+                    print(f"  → Emitting context_graph ({len(graph_data.get('nodes', []))} nodes, {len(graph_data.get('links', []))} links)")
                     yield {"type": "context_graph", "data": graph_data}
-            except Exception:
-                pass  # Graph extraction is non-critical
+                else:
+                    print(f"  ⚠ Graph extraction returned None. Context length: {len(context_content)}")
+                    print(f"  ⚠ Context preview: {context_content[:200]}")
+            except Exception as e:
+                print(f"  ⚠ Graph extraction error: {e}")
 
             # Send watermelon and scorecard data
             try:
@@ -251,7 +454,6 @@ class AgentOrchestrator:
             )
 
             # Show brief summary
-            cd_preview = customer_data_content[:300] + "..." if len(customer_data_content) > 300 else customer_data_content
             yield {"type": "token", "agent": "customer-data", "content": f"✅ Customer data collected ({len(customer_data_content)} chars)\n"}
 
             if cd_sources:
@@ -295,6 +497,122 @@ class AgentOrchestrator:
             yield event
 
         yield {"type": "done"}
+
+    def evaluate_draft(self, draft_content: str) -> dict:
+        """Evaluate a draft document against an executive-briefing rubric.
+
+        Returns a dict with overall_score (0-100), per-criterion scores,
+        summary, strengths, and improvements. Uses the insights agent as
+        an LLM evaluator returning strict JSON.
+        """
+        rubric_criteria = [
+            "Completeness — covers account, financials, risks, pipeline, and recommendations",
+            "Clarity — concise, well-organized, easy for an executive to skim",
+            "Grounding — claims are specific and backed by data/sources, not vague",
+            "Actionability — provides clear talking points and next steps",
+            "Structure & Formatting — effective use of headings, bullets, tables",
+            "Executive Readiness — appropriate tone and strategic framing for a CEO",
+        ]
+        criteria_list = "\n".join(f"- {c}" for c in rubric_criteria)
+
+        eval_prompt = (
+            "You are a strict executive-communications evaluator. Score the DRAFT below "
+            "against this rubric. Each criterion is scored 1-5 (5 = excellent).\n\n"
+            f"## Rubric Criteria\n{criteria_list}\n\n"
+            "## DRAFT TO EVALUATE\n"
+            f"{draft_content}\n\n"
+            "## Output\n"
+            "Return ONLY a JSON object (no markdown fences, no preamble) with this exact shape:\n"
+            "{\n"
+            '  "criteria": [\n'
+            '    {"name": "Completeness", "score": <1-5>, "rationale": "<one sentence>"},\n'
+            '    {"name": "Clarity", "score": <1-5>, "rationale": "<one sentence>"},\n'
+            '    {"name": "Grounding", "score": <1-5>, "rationale": "<one sentence>"},\n'
+            '    {"name": "Actionability", "score": <1-5>, "rationale": "<one sentence>"},\n'
+            '    {"name": "Structure & Formatting", "score": <1-5>, "rationale": "<one sentence>"},\n'
+            '    {"name": "Executive Readiness", "score": <1-5>, "rationale": "<one sentence>"}\n'
+            "  ],\n"
+            '  "summary": "<2-3 sentence overall assessment>",\n'
+            '  "strengths": ["<strength>", "<strength>"],\n'
+            '  "improvements": ["<improvement>", "<improvement>"]\n'
+            "}"
+        )
+
+        if not self.client:
+            return self._demo_evaluation(draft_content)
+
+        content, _usage, _sources = self._collect_agent_response(
+            self.insights_name, eval_prompt
+        )
+
+        try:
+            data = self._parse_json(content)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return self._demo_evaluation(draft_content)
+
+        criteria = []
+        total = 0.0
+        count = 0
+        for c in data.get("criteria", []):
+            try:
+                score = float(c.get("score", 0))
+            except (TypeError, ValueError):
+                score = 0.0
+            score = max(0.0, min(5.0, score))
+            criteria.append({
+                "name": c.get("name", "Criterion"),
+                "score": score,
+                "max_score": 5.0,
+                "rationale": c.get("rationale", ""),
+            })
+            total += score
+            count += 1
+
+        overall = round((total / (count * 5.0)) * 100, 1) if count else 0.0
+
+        return {
+            "overall_score": overall,
+            "criteria": criteria,
+            "summary": data.get("summary", ""),
+            "strengths": data.get("strengths", []),
+            "improvements": data.get("improvements", []),
+        }
+
+    def _demo_evaluation(self, draft_content: str) -> dict:
+        """Heuristic fallback evaluation when no agent is available."""
+        text = draft_content or ""
+        length = len(text)
+        has_headers = "#" in text
+        has_bullets = ("- " in text) or ("* " in text)
+        has_tables = "|" in text
+        has_numbers = any(ch.isdigit() for ch in text)
+
+        def clamp(v):
+            return max(1.0, min(5.0, v))
+
+        criteria = [
+            {"name": "Completeness", "score": clamp(2 + length / 600), "max_score": 5.0,
+             "rationale": "Estimated from draft length and section coverage."},
+            {"name": "Clarity", "score": clamp(3 + (1 if has_headers else 0)), "max_score": 5.0,
+             "rationale": "Headings improve skimmability." if has_headers else "Add headings to improve clarity."},
+            {"name": "Grounding", "score": clamp(2 + (2 if has_numbers else 0)), "max_score": 5.0,
+             "rationale": "Specific figures present." if has_numbers else "Add concrete data points."},
+            {"name": "Actionability", "score": clamp(3 + (1 if has_bullets else 0)), "max_score": 5.0,
+             "rationale": "Bulleted actions detected." if has_bullets else "Add clear next steps."},
+            {"name": "Structure & Formatting", "score": clamp(2 + (1 if has_headers else 0) + (1 if has_tables else 0)), "max_score": 5.0,
+             "rationale": "Tables/headings aid structure." if (has_tables or has_headers) else "Use headings and tables."},
+            {"name": "Executive Readiness", "score": clamp(3), "max_score": 5.0,
+             "rationale": "Heuristic baseline (agent offline)."},
+        ]
+        total = sum(c["score"] for c in criteria)
+        overall = round((total / (len(criteria) * 5.0)) * 100, 1)
+        return {
+            "overall_score": overall,
+            "criteria": criteria,
+            "summary": "Heuristic evaluation (AI evaluator offline). Connect Azure for a full rubric review.",
+            "strengths": ["Draft captured" if length else "No content yet"],
+            "improvements": ["Add data-backed specifics", "Ensure clear next steps and tables"],
+        }
 
     def _parse_json(self, raw: str) -> dict:
         """Parse JSON from agent output, handling markdown code fences."""
@@ -353,6 +671,29 @@ class AgentOrchestrator:
         except (json.JSONDecodeError, TypeError, ValueError):
             return f"Context gathered ({len(raw_json)} chars). Generating insights...\n"
 
+    def _section(self, data: dict, *names: str) -> dict:
+        """Locate a context sub-section regardless of the agent's schema variant.
+
+        The context-builder sometimes nests data under ``context.<name>`` and
+        other times returns it at the top level as ``<name>`` or ``get<Name>``
+        (e.g. ``getFinancials``, ``getRisk``). Try all variants.
+        """
+        ctx = data.get("context", {})
+        if not isinstance(ctx, dict):
+            ctx = {}
+        for name in names:
+            section = ctx.get(name)
+            if isinstance(section, dict) and section:
+                return section
+            section = data.get(name)
+            if isinstance(section, dict) and section:
+                return section
+            get_key = "get" + "".join(p.capitalize() for p in name.split("_"))
+            section = data.get(get_key)
+            if isinstance(section, dict) and section:
+                return section
+        return {}
+
     def _extract_graph(self, raw_json: str) -> dict:
         """Extract knowledge graph nodes and links from context-builder JSON."""
         try:
@@ -390,27 +731,27 @@ class AgentOrchestrator:
         context = data.get("context", {})
 
         # Financials
-        fin = context.get("financials", {})
+        fin = self._section(data, "financials")
         if fin:
-            revenue = fin.get("annual_revenue") or fin.get("revenue", "")
+            revenue = fin.get("ytd_revenue_usd") or fin.get("annual_revenue") or fin.get("revenue", "")
             add_node("financials", "Financials", "data", f"Revenue: {revenue}")
             links.append({"source": "account", "target": "financials", "label": "financials"})
 
         # Telemetry / usage
-        tel = context.get("telemetry", {})
+        tel = self._section(data, "telemetry")
         if tel:
             add_node("telemetry", "Usage & Telemetry", "data", str(tel.get("summary", ""))[:100])
             links.append({"source": "account", "target": "telemetry", "label": "telemetry"})
 
         # Risk
-        risk = context.get("risk", {})
+        risk = self._section(data, "risk")
         if risk:
             sentiment = risk.get("system_sentiment") or risk.get("overall_risk", "")
             add_node("risk", "Risk Profile", "risk", f"Sentiment: {sentiment}")
             links.append({"source": "account", "target": "risk", "label": "risk"})
 
         # Staffing
-        staff = context.get("staffing", {})
+        staff = self._section(data, "staffing")
         if staff:
             add_node("staffing", "Staffing", "data", "Team & resource data")
             links.append({"source": "account", "target": "staffing", "label": "staffing"})
@@ -425,7 +766,7 @@ class AgentOrchestrator:
                     links.append({"source": "staffing", "target": mid, "label": role[:20]})
 
         # Pipeline / opportunities
-        pipeline = context.get("pipeline", {})
+        pipeline = self._section(data, "pipeline")
         if pipeline:
             add_node("pipeline", "Pipeline", "opportunity", "Deals & opportunities")
             links.append({"source": "account", "target": "pipeline", "label": "pipeline"})
@@ -433,19 +774,19 @@ class AgentOrchestrator:
             for i, opp in enumerate(opps[:4]):
                 if isinstance(opp, dict):
                     name = opp.get("name", opp.get("deal_name", f"Deal {i+1}"))
-                    value = opp.get("value", opp.get("amount", ""))
+                    value = opp.get("value", opp.get("amount") or opp.get("amount_usd", ""))
                     oid = f"opp_{i}"
                     add_node(oid, name, "opportunity", f"Value: {value}")
                     links.append({"source": "pipeline", "target": oid, "label": "deal"})
 
         # Relationship history
-        rel = context.get("relationship_history", {})
+        rel = self._section(data, "relationship_history")
         if rel:
             add_node("relationship", "Relationship History", "data", "Past interactions")
             links.append({"source": "account", "target": "relationship", "label": "history"})
 
         # External context
-        ext = context.get("external_context", {})
+        ext = self._section(data, "external_context", "external")
         if ext:
             add_node("external", "External Intel", "data", "Market & industry data")
             links.append({"source": "account", "target": "external", "label": "external"})
@@ -472,19 +813,26 @@ class AgentOrchestrator:
 
         account_name = (data.get("aliases_resolved") or ["Unknown Account"])[0]
         account_code = data.get("account_code", "")
-        context = data.get("context", {})
-        fin = context.get("financials", {})
-        tel = context.get("telemetry", {})
-        risk = context.get("risk", {})
-        account_info = context.get("account", {})
+        fin = self._section(data, "financials")
+        tel = self._section(data, "telemetry")
+        risk = self._section(data, "risk")
+        account_info = self._section(data, "account")
+        if account_info.get("account_name") and (account_name == "Unknown Account"):
+            account_name = account_info.get("account_name")
 
         # System metrics (the "green" side)
+        rev_growth = fin.get("yoy_growth_pct") or fin.get("growth", "")
+        if isinstance(rev_growth, float):
+            rev_growth = f"{rev_growth * 100:.1f}%"
+        cons_growth = tel.get("qoq_growth_pct") or tel.get("mom_growth_pct") or tel.get("growth", "")
+        if isinstance(cons_growth, float):
+            cons_growth = f"{cons_growth * 100:.1f}%"
         system_metrics = {
             "revenue": fin.get("ytd_revenue_usd") or fin.get("annual_revenue") or fin.get("revenue", "N/A"),
-            "revenue_growth": fin.get("yoy_growth_pct") or fin.get("growth", ""),
-            "consumption_growth": tel.get("mom_growth_pct") or tel.get("growth", ""),
+            "revenue_growth": rev_growth,
+            "consumption_growth": cons_growth,
             "nps": risk.get("nps") or account_info.get("nps", ""),
-            "support_tickets": risk.get("open_p1_p2") or risk.get("support_tickets", ""),
+            "support_tickets": risk.get("open_P1") or risk.get("open_p1_p2") or risk.get("support_tickets", ""),
             "engagement": account_info.get("signals", [{}])[0].get("value", "healthy") if account_info.get("signals") else "N/A",
             "renewal_status": risk.get("renewal_status") or "On Track",
         }
@@ -494,13 +842,80 @@ class AgentOrchestrator:
         watermelon_signals = []
         for flag in flags:
             if isinstance(flag, dict):
-                watermelon_signals.append({
-                    "severity": flag.get("severity", "amber"),
-                    "signal": flag.get("signal") or flag.get("description") or flag.get("finding", ""),
-                    "source": flag.get("source", "Agent intelligence"),
-                })
+                signal = (
+                    flag.get("signal") or flag.get("description")
+                    or flag.get("finding") or flag.get("note")
+                )
+                severity = flag.get("severity")
+                if not severity:
+                    sv = flag.get("system_view", {})
+                    sentiment = sv.get("system_sentiment") if isinstance(sv, dict) else None
+                    severity = sentiment if sentiment in ("red", "amber") else "amber"
+                if signal:
+                    watermelon_signals.append({
+                        "severity": severity,
+                        "signal": signal,
+                        "source": flag.get("source", "Agent intelligence"),
+                    })
             elif isinstance(flag, str):
                 watermelon_signals.append({"severity": "red", "signal": flag, "source": "Agent intelligence"})
+
+        # Also check risk section for hidden signals
+        risk_items = risk.get("risks") or risk.get("risk_factors") or []
+        if not watermelon_signals and risk_items:
+            for item in risk_items[:5]:
+                if isinstance(item, dict):
+                    watermelon_signals.append({
+                        "severity": item.get("severity", "amber"),
+                        "signal": item.get("description") or item.get("risk") or str(item),
+                        "source": "Risk analysis",
+                    })
+                elif isinstance(item, str):
+                    watermelon_signals.append({"severity": "amber", "signal": item, "source": "Risk analysis"})
+
+        # Derive signals from open incidents, staffing gaps, and telemetry
+        if not watermelon_signals:
+            incidents = risk.get("open_incidents", [])
+            for inc in incidents[:3]:
+                if isinstance(inc, dict):
+                    watermelon_signals.append({
+                        "severity": "red" if inc.get("severity") == "P1" else "amber",
+                        "signal": f"{inc.get('severity', 'P2')} incident: {inc.get('summary', 'Open issue')} (aging {inc.get('aging_days', '?')} days)",
+                        "source": risk.get("source", "ServiceNow"),
+                    })
+
+            # Staffing concerns
+            staffing = self._section(data, "staffing")
+            if staffing.get("open_roles") and staffing.get("key_open_role"):
+                watermelon_signals.append({
+                    "severity": "amber",
+                    "signal": f"Key role unfilled: {staffing['key_open_role']}",
+                    "source": staffing.get("source", "Workday"),
+                })
+            if staffing.get("attrition_last_quarter", 0) > 1:
+                watermelon_signals.append({
+                    "severity": "amber",
+                    "signal": f"Team attrition: {staffing['attrition_last_quarter']} departures last quarter",
+                    "source": staffing.get("source", "Workday"),
+                })
+
+            # Telemetry decline
+            growth = tel.get("qoq_growth_pct") or tel.get("mom_growth_pct")
+            if growth and isinstance(growth, (int, float)) and growth < 0:
+                watermelon_signals.append({
+                    "severity": "amber",
+                    "signal": f"Usage declining: {growth*100:.1f}% QoQ ({tel.get('consumption_trend', 'declining')})",
+                    "source": tel.get("source", "Telemetry"),
+                })
+
+            # Sentiment not green
+            sentiment = risk.get("system_sentiment", "")
+            if sentiment in ("amber", "red"):
+                watermelon_signals.append({
+                    "severity": sentiment,
+                    "signal": f"System sentiment: {sentiment} (despite positive revenue metrics)",
+                    "source": risk.get("source", "Risk engine"),
+                })
 
         # Agent-adjusted metrics
         agent_metrics = {
@@ -531,50 +946,87 @@ class AgentOrchestrator:
 
         account_name = (data.get("aliases_resolved") or ["Unknown Account"])[0]
         account_code = data.get("account_code", "")
-        context = data.get("context", {})
-        fin = context.get("financials", {})
-        tel = context.get("telemetry", {})
-        risk = context.get("risk", {})
-        pipeline = context.get("pipeline", {})
-        account_info = context.get("account", {})
+        fin = self._section(data, "financials")
+        tel = self._section(data, "telemetry")
+        risk = self._section(data, "risk")
+        pipeline = self._section(data, "pipeline")
+        account_info = self._section(data, "account")
+        staffing = self._section(data, "staffing")
+        if account_info.get("account_name") and account_name == "Unknown Account":
+            account_name = account_info.get("account_name")
 
         # Revenue
         revenue = fin.get("ytd_revenue_usd") or fin.get("annual_revenue") or fin.get("revenue", 0)
-        revenue_growth = fin.get("yoy_growth_pct") or fin.get("growth_pct", "")
+        prior_revenue = fin.get("prior_ytd_revenue_usd", 0)
+        if revenue and prior_revenue and isinstance(revenue, (int, float)) and isinstance(prior_revenue, (int, float)) and prior_revenue > 0:
+            revenue_growth = f"{((revenue - prior_revenue) / prior_revenue) * 100:.1f}%"
+        else:
+            revenue_growth = fin.get("yoy_growth_pct") or fin.get("growth_pct", "N/A")
+        if isinstance(revenue_growth, float):
+            revenue_growth = f"{revenue_growth * 100:.1f}%"
         margin = fin.get("margin_pct", "")
+        if isinstance(margin, float) and margin < 1:
+            margin = f"{margin * 100:.0f}%"
 
         # Pipeline
         opps = pipeline.get("opportunities") or pipeline.get("deals") or []
-        total_pipeline = sum(
-            float(o.get("value", 0) or o.get("amount", 0) or 0)
-            for o in opps if isinstance(o, dict)
+        total_pipeline = (
+            pipeline.get("total_open_pipeline_usd")
+            or pipeline.get("open_usd")
+            or sum(
+                float(o.get("value", 0) or o.get("amount", 0) or o.get("amount_usd", 0) or 0)
+                for o in opps if isinstance(o, dict)
+            )
         )
-        deal_count = len(opps)
+        deal_count = len(opps) or (1 if pipeline.get("open_usd") else 0)
 
-        # ACR / Consumption
-        acr = tel.get("monthly_acr") or tel.get("acr", "")
-        acr_growth = tel.get("mom_growth_pct") or tel.get("growth", "")
+        # Telemetry
+        active_seats = tel.get("monthly_active_seats") or tel.get("active_seats") or tel.get("active_users", "")
+        consumption_trend = tel.get("consumption_trend") or tel.get("trend", "")
+        qoq_growth = tel.get("qoq_growth_pct") or tel.get("mom_growth_pct", "")
+        if isinstance(qoq_growth, float):
+            qoq_growth = f"{qoq_growth * 100:.1f}%"
 
         # CSAT / NPS
-        nps = risk.get("nps") or account_info.get("nps", "")
         csat = risk.get("csat") or account_info.get("csat", "")
-        csat_trend = risk.get("csat_trend") or []
+        csat_prior = risk.get("csat_prior", "")
+        nps = risk.get("nps") or account_info.get("nps", "")
 
-        # Health score
+        # Health score — derive from system_sentiment if not explicit
         health_score = risk.get("health_score") or risk.get("overall_score", "")
-        health_status = risk.get("overall_risk") or risk.get("system_sentiment", "")
+        health_status = risk.get("system_sentiment") or risk.get("overall_risk", "")
+        if not health_score and health_status:
+            score_map = {"green": 85, "amber": 65, "red": 40}
+            health_score = score_map.get(health_status, 70)
 
-        # Risk factors
+        # Risk factors from incidents and flags
         risk_factors = []
         flags = data.get("watermelon_flags", [])
         for flag in flags:
             if isinstance(flag, dict):
                 risk_factors.append({
                     "severity": flag.get("severity", "amber"),
-                    "description": flag.get("signal") or flag.get("description") or flag.get("finding", ""),
+                    "description": flag.get("signal") or flag.get("description") or flag.get("finding") or flag.get("note", ""),
                 })
             elif isinstance(flag, str):
                 risk_factors.append({"severity": "amber", "description": flag})
+
+        # Add incidents as risk factors
+        incidents = risk.get("open_incidents", [])
+        for inc in incidents[:3]:
+            if isinstance(inc, dict):
+                risk_factors.append({
+                    "severity": "red" if inc.get("severity") == "P1" else "amber",
+                    "description": f"{inc.get('severity', 'P2')}: {inc.get('summary', 'Open incident')}",
+                })
+
+        # Staffing
+        open_roles = staffing.get("open_roles", 0)
+        if open_roles and staffing.get("key_open_role"):
+            risk_factors.append({
+                "severity": "amber",
+                "description": f"Unfilled: {staffing['key_open_role']}",
+            })
 
         # Renewal
         renewal_date = risk.get("renewal_date") or fin.get("renewal_date", "")
@@ -593,14 +1045,18 @@ class AgentOrchestrator:
             "margin": margin,
             "pipeline_value": total_pipeline,
             "deal_count": deal_count,
-            "acr": acr,
-            "acr_growth": acr_growth,
+            "active_seats": active_seats,
+            "consumption_trend": consumption_trend,
+            "qoq_growth": qoq_growth,
             "nps": nps,
             "csat": csat,
-            "csat_trend": csat_trend,
+            "csat_prior": csat_prior,
             "risk_factors": risk_factors,
             "renewal_date": renewal_date,
             "renewal_status": renewal_status,
+            "open_p1": risk.get("open_P1", 0),
+            "staffing_ftes": staffing.get("billable_ftes", ""),
+            "staffing_open_roles": open_roles,
         }
 
     async def _demo_orchestrate(self, query: str) -> AsyncGenerator[dict, None]:

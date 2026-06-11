@@ -2,8 +2,14 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { Session, SessionSummary, ChatMessage, StreamEvent, TokenUsage } from './types';
 import { useStreamingChat } from './hooks/useStreamingChat';
 import { useVoiceInput } from './hooks/useVoiceInput';
-import ReactMarkdown from 'react-markdown';
-import { Send, Mic, MicOff, Plus, MessageSquare, Zap, X, Edit3, Check, RotateCcw, GitBranch, AlertTriangle, BarChart3 } from 'lucide-react';
+import { useSpeech } from './hooks/useSpeech';
+import { useIdentity } from './hooks/useIdentity';
+import IdentityModal from './components/IdentityModal';
+import CollaborationPanel from './components/CollaborationPanel';
+import DocumentTab from './components/DocumentTab';
+import ChatCharts from './components/ChatCharts';
+import ChatMessageCard from './components/ChatMessageCard';
+import { Send, Mic, MicOff, Plus, MessageSquare, Zap, X, Edit3, RotateCcw, GitBranch, AlertTriangle, BarChart3, FileText, Trash2 } from 'lucide-react';
 import ForceGraph2D from 'react-force-graph-2d';
 
 interface GraphNode {
@@ -31,16 +37,22 @@ function App() {
   const [input, setInput] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
-  const [activeTab, setActiveTab] = useState<'chat' | 'graph' | 'watermelon' | 'scorecard'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'graph' | 'watermelon' | 'scorecard' | 'document'>('chat');
   const [graphData, setGraphData] = useState<GraphData | null>(null);
   const [watermelonRevealed, setWatermelonRevealed] = useState(false);
   const [watermelonData, setWatermelonData] = useState<any>(null);
   const [scorecardData, setScorecardData] = useState<any>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const graphContainerRef = useRef<HTMLDivElement>(null);
 
+  const { userName, setUserName, hasIdentity } = useIdentity();
+
   const { sendMessage, cancelStream, isStreaming, activeAgent } = useStreamingChat();
+
+  const { speak, speakingId, loadingId: speakLoadingId } = useSpeech();
 
   const handleVoiceResult = useCallback((text: string) => {
     setInput(prev => prev + text);
@@ -51,6 +63,12 @@ function App() {
   // Load sessions
   useEffect(() => {
     fetchSessions();
+    // Deep-link: open a shared session via ?session=<id>
+    const params = new URLSearchParams(window.location.search);
+    const shared = params.get('session');
+    if (shared) {
+      loadSession(shared);
+    }
   }, []);
 
   // Auto-scroll
@@ -84,6 +102,43 @@ function App() {
       const data = await res.json();
       await fetchSessions();
       await loadSession(data.id);
+      // Immediately prompt for a name via inline rename
+      startRename(data.id, data.title);
+    } catch { /* no-op */ }
+  }
+
+  function startRename(sessionId: string, currentTitle: string) {
+    setRenamingId(sessionId);
+    setRenameValue(currentTitle === 'New Session' ? '' : currentTitle);
+  }
+
+  async function commitRename(sessionId: string) {
+    const title = renameValue.trim();
+    setRenamingId(null);
+    if (!title) return;
+    try {
+      await fetch(`/api/sessions/${sessionId}/title`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title }),
+      });
+      setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, title } : s));
+      setActiveSession(prev => prev && prev.id === sessionId ? { ...prev, title } : prev);
+    } catch { /* no-op */ }
+  }
+
+  async function deleteSession(sessionId: string, title: string) {
+    if (!window.confirm(`Delete session "${title || 'Untitled'}"? This cannot be undone.`)) return;
+    try {
+      await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+      setSessions(prev => prev.filter(s => s.id !== sessionId));
+      if (activeSession?.id === sessionId) {
+        setActiveSession(null);
+        setScorecardData(null);
+        setWatermelonData(null);
+        setGraphData(null);
+        setWatermelonRevealed(false);
+      }
     } catch { /* no-op */ }
   }
 
@@ -92,6 +147,11 @@ function App() {
       const res = await fetch(`/api/sessions/${sessionId}`);
       const data = await res.json();
       setActiveSession(data);
+      // Restore persisted visuals for this session (null if none captured yet)
+      setScorecardData(data.scorecard_data ?? null);
+      setWatermelonData(data.watermelon_data ?? null);
+      setGraphData(data.graph_data ?? null);
+      setWatermelonRevealed(false);
     } catch { /* no-op */ }
   }
 
@@ -115,6 +175,10 @@ function App() {
           insights: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
           cumulative: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
         },
+        collaborators: [],
+        assignee: null,
+        draft: { content: '', updated_at: new Date().toISOString(), updated_by: null },
+        evaluation: null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -252,6 +316,7 @@ function App() {
           message_id: messageId,
           session_id: activeSession.id,
           new_content: editContent,
+          user_name: userName,
         }),
       });
       if (res.ok) {
@@ -260,7 +325,7 @@ function App() {
           return {
             ...prev,
             messages: prev.messages.map(m =>
-              m.id === messageId ? { ...m, content: editContent, is_edited: true } : m
+              m.id === messageId ? { ...m, content: editContent, is_edited: true, edited_by: userName } : m
             ),
           };
         });
@@ -308,14 +373,46 @@ function App() {
               <div
                 key={s.id}
                 className={`session-item ${activeSession?.id === s.id ? 'active' : ''}`}
-                onClick={() => loadSession(s.id)}
+                onClick={() => { if (renamingId !== s.id) loadSession(s.id); }}
               >
-                <div className="session-item-title">
-                  <MessageSquare size={12} style={{ marginRight: 6, opacity: 0.5 }} />
-                  {s.title}
-                </div>
+                {renamingId === s.id ? (
+                  <input
+                    className="session-rename-input"
+                    value={renameValue}
+                    autoFocus
+                    placeholder="Name this session…"
+                    onClick={e => e.stopPropagation()}
+                    onChange={e => setRenameValue(e.target.value)}
+                    onBlur={() => commitRename(s.id)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') commitRename(s.id);
+                      if (e.key === 'Escape') setRenamingId(null);
+                    }}
+                  />
+                ) : (
+                  <div className="session-item-title">
+                    <MessageSquare size={12} style={{ marginRight: 6, opacity: 0.5, flexShrink: 0 }} />
+                    <span className="session-item-name">{s.title}</span>
+                    <button
+                      className="session-rename-btn"
+                      title="Rename session"
+                      onClick={e => { e.stopPropagation(); startRename(s.id, s.title); }}
+                    >
+                      <Edit3 size={12} />
+                    </button>
+                    <button
+                      className="session-rename-btn session-delete-btn"
+                      title="Delete session"
+                      onClick={e => { e.stopPropagation(); deleteSession(s.id, s.title); }}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                )}
                 <div className="session-item-meta">
                   {s.message_count} messages • {s.token_usage.total_tokens.toLocaleString()} tokens
+                  {s.collaborator_count > 0 && <span className="session-tag">👥 {s.collaborator_count}</span>}
+                  {s.has_draft && <span className="session-tag">📝 draft</span>}
                 </div>
               </div>
             ))
@@ -329,7 +426,16 @@ function App() {
         <header className="chat-header">
           <div className="chat-header-left">
             <div className="chat-header-title">
-              {activeSession ? activeSession.title : 'Office of CEO - Insights Builder'}
+              {activeSession ? (
+                <button
+                  className="header-title-btn"
+                  title="Rename session"
+                  onClick={() => startRename(activeSession.id, activeSession.title)}
+                >
+                  {activeSession.title}
+                  <Edit3 size={13} className="header-title-edit" />
+                </button>
+              ) : 'Office of CEO - Insights Builder'}
             </div>
             <div className="tab-bar">
               <button
@@ -358,16 +464,49 @@ function App() {
               >
                 <BarChart3 size={14} /> Scorecard
               </button>
+              <button
+                className={`tab-btn ${activeTab === 'document' ? 'active' : ''}`}
+                onClick={() => setActiveTab('document')}
+              >
+                <FileText size={14} /> Document
+                {activeSession?.draft?.content?.trim() && <span className="tab-badge">✓</span>}
+              </button>
             </div>
           </div>
-          <div className="token-counter">
-            <Zap size={14} />
-            Session Tokens: <span className="token-value">{cumulativeTokens.toLocaleString()}</span>
+          <div className="chat-header-right">
+            {activeSession && (
+              <CollaborationPanel
+                session={activeSession}
+                onChange={(s) => { setActiveSession(s); fetchSessions(); }}
+              />
+            )}
+            <div className="token-counter">
+              <Zap size={14} />
+              Session Tokens: <span className="token-value">{cumulativeTokens.toLocaleString()}</span>
+            </div>
           </div>
         </header>
 
         {/* Tab Content */}
-        {activeTab === 'scorecard' ? (
+        {activeTab === 'document' ? (
+          activeSession ? (
+            <DocumentTab
+              session={activeSession}
+              userName={userName}
+              scorecard={scorecardData}
+              onSpeak={speak}
+              speakingId={speakingId}
+              speakLoadingId={speakLoadingId}
+              onChange={(s) => setActiveSession(s)}
+            />
+          ) : (
+            <div className="welcome-screen">
+              <div className="welcome-icon">📝</div>
+              <h2>Document Editor</h2>
+              <p>Start or open a session, then pull your insights into the editor to craft a final briefing.</p>
+            </div>
+          )
+        ) : activeTab === 'scorecard' ? (
           <div className="scorecard-container">
             <div className="scorecard-header">
               <h2>📊 Executive Account Scorecard</h2>
@@ -741,85 +880,47 @@ function App() {
         ) : (
           <div className="messages-container">
             {activeSession.messages.map(msg => (
-              <div key={msg.id} className={`message ${msg.role}`}>
-                <div className="message-avatar">
-                  {msg.role === 'user' ? 'You' : 'AI'}
-                </div>
-                <div className="message-bubble">
-                  {msg.agent && (
-                    <div className={`message-agent-badge ${msg.agent}`}>
-                      {msg.agent === 'context-builder' ? '🔍 Context Builder' : '💡 Insights'}
-                    </div>
-                  )}
-                  {editingId === msg.id ? (
-                    <div>
-                      <textarea
-                        className="edit-textarea"
-                        value={editContent}
-                        onChange={e => setEditContent(e.target.value)}
-                        autoFocus
-                      />
-                      <div className="edit-actions">
-                        <button className="edit-save" onClick={() => handleEdit(msg.id)}>
-                          <Check size={12} /> Save
-                        </button>
-                        <button className="edit-cancel" onClick={() => setEditingId(null)}>
-                          <X size={12} /> Cancel
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="message-content">
-                      <ReactMarkdown
-                        components={{
-                          a: ({ href, children }) => (
-                            <a href={href} target="_blank" rel="noopener noreferrer">
-                              {children}
-                            </a>
-                          ),
-                        }}
-                      >{msg.content}</ReactMarkdown>
-                    </div>
-                  )}
-                  {msg.role === 'assistant' && msg.content && !editingId && (
-                    <div className="message-actions">
-                      <button
-                        className="message-action-btn"
-                        onClick={() => { setEditingId(msg.id); setEditContent(msg.content); }}
-                      >
-                        <Edit3 size={10} /> Edit
-                      </button>
-                      {msg.is_edited && (
-                        <button
-                          className="message-action-btn"
-                          onClick={() => {
-                            setActiveSession(prev => {
-                              if (!prev) return null;
-                              return {
-                                ...prev,
-                                messages: prev.messages.map(m =>
-                                  m.id === msg.id && m.original_content
-                                    ? { ...m, content: m.original_content, is_edited: false }
-                                    : m
-                                ),
-                              };
-                            });
-                          }}
-                        >
-                          <RotateCcw size={10} /> Revert
-                        </button>
-                      )}
-                    </div>
-                  )}
+              <ChatMessageCard
+                key={msg.id}
+                msg={msg}
+                editingId={editingId}
+                editContent={editContent}
+                setEditContent={setEditContent}
+                onStartEdit={(m) => { setEditingId(m.id); setEditContent(m.content); }}
+                onSaveEdit={handleEdit}
+                onCancelEdit={() => setEditingId(null)}
+                onRevert={(id) => {
+                  setActiveSession(prev => {
+                    if (!prev) return null;
+                    return {
+                      ...prev,
+                      messages: prev.messages.map(m =>
+                        m.id === id && m.original_content
+                          ? { ...m, content: m.original_content, is_edited: false }
+                          : m
+                      ),
+                    };
+                  });
+                }}
+                onSpeak={speak}
+                speakingId={speakingId}
+                loadingId={speakLoadingId}
+              />
+            ))}
+            {scorecardData && (
+              <div className="message assistant">
+                <div className="message-avatar">📊</div>
+                <div className="message-bubble chart-message-bubble">
+                  <ChatCharts scorecard={scorecardData} />
                 </div>
               </div>
-            ))}
+            )}
             {isStreaming && (
               <div className="streaming-indicator">
                 <div className="streaming-dot" />
                 <div className="streaming-dot" />
                 <div className="streaming-dot" />
-                <span>{activeAgent === 'context-builder' ? 'Researching context...' : activeAgent === 'insights' ? 'Generating insights...' : 'Processing...'}</span>
+                <span>{activeAgent === 'context-builder' ? 'Researching context...' : activeAgent === 'customer-data' ? 'Gathering customer data...' : activeAgent === 'insights' ? 'Generating insights...' : 'Processing...'}</span>
               </div>
             )}
             <div ref={messagesEndRef} />
@@ -829,6 +930,7 @@ function App() {
         )}
 
         {/* Input Area */}
+        {activeTab !== 'document' && (
         <div className="input-area">
           <div className="input-wrapper">
             <textarea
@@ -866,7 +968,9 @@ function App() {
             )}
           </div>
         </div>
+        )}
       </main>
+      {!hasIdentity && <IdentityModal onSubmit={setUserName} />}
     </div>
   );
 }
