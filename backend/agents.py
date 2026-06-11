@@ -255,7 +255,6 @@ class AgentOrchestrator:
             )
 
             # Show brief summary
-            cd_preview = customer_data_content[:300] + "..." if len(customer_data_content) > 300 else customer_data_content
             yield {"type": "token", "agent": "customer-data", "content": f"✅ Customer data collected ({len(customer_data_content)} chars)\n"}
 
             if cd_sources:
